@@ -665,3 +665,38 @@ pub fn trigger_task_start(app: AppHandle, scheduler: Arc<Scheduler>, task_id: i6
         let _ = app_clone;
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_task_status_display() {
+        assert_eq!(TaskStatus::Pending.to_string(), "pending");
+        assert_eq!(TaskStatus::Preparing.to_string(), "preparing");
+        assert_eq!(TaskStatus::Generating.to_string(), "generating");
+        assert_eq!(TaskStatus::Downloading.to_string(), "downloading");
+        assert_eq!(TaskStatus::Completed.to_string(), "completed");
+        assert_eq!(TaskStatus::Failed.to_string(), "failed");
+        assert_eq!(TaskStatus::Cancelled.to_string(), "cancelled");
+        assert_eq!(TaskStatus::Paused.to_string(), "paused");
+    }
+
+    #[test]
+    fn test_scheduler_new() {
+        let scheduler = Scheduler::new();
+        assert!(!scheduler.is_running());
+        assert!(scheduler.try_acquire(1));
+        assert!(!scheduler.try_acquire(2));
+        scheduler.release();
+        assert!(scheduler.try_acquire(2));
+    }
+
+    #[test]
+    fn test_error_class_display() {
+        assert_eq!(ErrorClass::TempNetwork.to_string(), "temp_network");
+        assert_eq!(ErrorClass::LoginExpired.to_string(), "login_expired");
+        assert_eq!(ErrorClass::Captcha.to_string(), "captcha");
+        assert_eq!(ErrorClass::Other.to_string(), "other");
+    }
+}

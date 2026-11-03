@@ -134,3 +134,104 @@ class ImagePool {
 module.exports = {
   ImagePool,
 };
+
+// 下载器/随机池单元测试（需在 Node.js 环境下运行）
+function testPool() {
+  let passed = 0;
+  let failed = 0;
+
+  const fs = require('fs');
+  const path = require('path');
+  const tmpDir = require('os').tmpdir();
+  const testDir = path.join(tmpDir, 'doubao-pool-test-' + Date.now());
+  fs.mkdirSync(testDir, { recursive: true });
+  const poolFile = path.join(testDir, 'pool.json');
+
+  try {
+    // Test 1: ImagePool creation and persistence
+    {
+      const pool = new ImagePool(poolFile);
+      pool.markUsed(['/img/a.jpg', '/img/b.jpg']);
+      const pool2 = new ImagePool(poolFile);
+      if (pool2.usedImagePaths.has('/img/a.jpg') && pool2.usedImagePaths.has('/img/b.jpg')) {
+        passed++;
+      } else {
+        failed++;
+        console.error('FAIL: pool persistence - URLs not persisted');
+      }
+    }
+
+    // Test 2: setRoundImages / getRoundImages
+    {
+      const pool = new ImagePool(path.join(testDir, 'pool2.json'));
+      const images = [
+        { index: 1, path: '/img/1.jpg', url: 'http://a.com/1.jpg', width: 100, height: 100 },
+        { index: 2, path: '/img/2.jpg', url: 'http://a.com/2.jpg', width: 200, height: 200 },
+      ];
+      pool.setRoundImages(images);
+      const retrieved = pool.getRoundImages();
+      if (retrieved.length === 2 && retrieved[0].index === 1 && retrieved[1].index === 2) {
+        passed++;
+      } else {
+        failed++;
+        console.error('FAIL: setRoundImages/getRoundImages - images not preserved');
+      }
+    }
+
+    // Test 3: clearRoundImages
+    {
+      const pool = new ImagePool(path.join(testDir, 'pool3.json'));
+      pool.setRoundImages([{ index: 1, path: '/img/1.jpg' }]);
+      pool.clearRoundImages();
+      if (pool.getRoundImages().length === 0) {
+        passed++;
+      } else {
+        failed++;
+        console.error('FAIL: clearRoundImages - images not cleared');
+      }
+    }
+
+    // Test 4: reset
+    {
+      const pool = new ImagePool(path.join(testDir, 'pool4.json'));
+      pool.markUsed(['/img/a.jpg']);
+      pool.setRoundImages([{ index: 1, path: '/img/1.jpg' }]);
+      pool.reset();
+      if (pool.usedImagePaths.size === 0 && pool.getRoundImages().length === 0) {
+        passed++;
+      } else {
+        failed++;
+        console.error('FAIL: reset - pool not cleared');
+      }
+    }
+
+    // Test 5: prune
+    {
+      const pool = new ImagePool(path.join(testDir, 'pool5.json'));
+      pool.markUsed(['/img/existing.jpg', '/img/deleted.jpg']);
+      pool.prune(['/img/existing.jpg']);
+      if (pool.usedImagePaths.has('/img/existing.jpg') && !pool.usedImagePaths.has('/img/deleted.jpg')) {
+        passed++;
+      } else {
+        failed++;
+        console.error('FAIL: prune - deleted image not removed');
+      }
+    }
+
+  } catch (e) {
+    failed++;
+    console.error('FAIL: Unexpected error:', e.message);
+  } finally {
+    // Cleanup
+    try { fs.rmSync(testDir, { recursive: true, force: true }); } catch (_) {}
+  }
+
+  console.log(`随机池测试结果: ${passed} 通过, ${failed} 失败`);
+  return failed === 0;
+}
+
+// 如果直接运行此文件，执行测试
+if (require.main === module) {
+  const success = testPool();
+  process.exit(success ? 0 : 1);
+}

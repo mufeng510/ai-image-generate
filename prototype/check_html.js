@@ -1,0 +1,10 @@
+const fs = require('fs');
+const html = fs.readFileSync('.output/diagnostics/before-download_2026-11-02T14-25-33.157Z.html', 'utf-8');
+console.log('HTML 长度:', html.length);
+console.log('image_ori_raw 出现次数:', (html.match(/image_ori_raw/g) || []).length);
+console.log('im/chain/single 出现次数:', (html.match(/im\/chain\/single/g) || []).length);
+console.log('chat/completion 出现次数:', (html.match(/chat\/completion/g) || []).length);
+console.log('image_ori 出现次数:', (html.match(/image_ori/g) || []).length);
+const urls = html.match(/https?:\/\/[^"'\\s]+\.(?:jpg|png|webp|jpeg)[^"'\\s]*/gi);
+console.log('图片 URL 数量:', urls ? urls.length : 0);
+if (urls) urls.slice(0, 10).forEach(u => console.log('  ', u.substring(0, 200)));

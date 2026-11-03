@@ -176,3 +176,58 @@ module.exports = {
   MIN_FILE_SIZE,
   MAX_FILE_SIZE,
 };
+
+// 下载器单元测试（需在 Node.js 环境下运行）
+function testDownloader() {
+  let passed = 0;
+  let failed = 0;
+
+  // extFromMagicBytes 测试
+  const pngSig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const jpgSig = Buffer.from([0xff, 0xd8, 0xff]);
+  const webpSig = Buffer.concat([Buffer.from([0x52, 0x49, 0x46, 0x46]), Buffer.alloc(4), Buffer.from([0x57, 0x45, 0x42, 0x50])]);
+
+  const tests = [
+    [extFromMagicBytes(pngSig), '.png', 'PNG magic'],
+    [extFromMagicBytes(jpgSig), '.jpg', 'JPEG magic'],
+    [extFromMagicBytes(webpSig), '.webp', 'WebP magic'],
+    [extFromMagicBytes(Buffer.alloc(0)), null, 'Empty buffer'],
+    [extFromMagicBytes(Buffer.from([0, 0, 0, 0])), null, 'Unknown bytes'],
+  ];
+
+  for (const [actual, expected, desc] of tests) {
+    if (actual === expected) {
+      passed++;
+    } else {
+      failed++;
+      console.error(`FAIL: ${desc}: expected ${expected}, got ${actual}`);
+    }
+  }
+
+  // extFromUrl 测试
+  const urlTests = [
+    ['https://example.com/image.png', '.png', 'PNG URL'],
+    ['https://example.com/image.jpg', '.jpg', 'JPEG URL'],
+    ['https://example.com/image.webp', '.webp', 'WEBP URL'],
+    ['https://example.com/noext', '.png', 'No extension defaults to png'],
+  ];
+
+  for (const [url, expected, desc] of urlTests) {
+    const actual = extFromUrl(url);
+    if (actual === expected) {
+      passed++;
+    } else {
+      failed++;
+      console.error(`FAIL: ${desc}: expected ${expected}, got ${actual}`);
+    }
+  }
+
+  console.log(`下载器测试结果: ${passed} 通过, ${failed} 失败`);
+  return failed === 0;
+}
+
+// 如果直接运行此文件，执行测试
+if (require.main === module) {
+  const success = testDownloader();
+  process.exit(success ? 0 : 1);
+}
