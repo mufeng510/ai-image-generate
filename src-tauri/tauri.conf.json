@@ -1,0 +1,42 @@
+{
+  "$schema": "https://tauri.app/schema/config.json",
+  "identifier": "com.doubao.batchimage",
+  "build": {
+    "frontendDist": "../src/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "豆包批量生图",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "pubkey": "PLACEHOLDER_PUBLIC_KEY",
+      "endpoints": [
+        "https://your-update-server.com/update/${target}/${current_version}"
+      ],
+      "dialog": true
+    }
+  }
+}

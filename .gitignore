@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-tauri/
+target/
+*.user
+*.log
+.env
+.vscode/
+.idea/
+output/
+.userdata/
+prototype/.output/
+prototype/.userdata/
+*.user.js

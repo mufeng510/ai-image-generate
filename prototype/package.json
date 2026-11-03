@@ -1,0 +1,16 @@
+{
+  "name": "doubao-batch-image-generate-prototype",
+  "version": "1.0.0",
+  "description": "Phase 1 最小可行性原型：可见 Chromium + Playwright 持久化上下文，验证豆包网页自动化核心流程（图片提取/下载模块已预置，登录后环节需凭据）",
+  "private": true,
+  "scripts": {
+    "start": "node src/doubao-automation.js",
+    "inspect": "node src/inspect-page.js"
+  },
+  "dependencies": {
+    "playwright": "^1.64.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
