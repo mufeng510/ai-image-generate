@@ -1,6 +1,13 @@
 import { useState, useEffect } from 'react'
-import { accountList, accountAdd, accountDelete, type Account } from '@/hooks/api'
+import { listen } from '@tauri-apps/api/event'
+import { accountList, accountAdd, accountDelete, accountOpenLogin, type Account } from '@/hooks/api'
 import { useI18n } from '@/i18n'
+
+const STATUS_LABEL: Record<string, string> = {
+  unknown: '未知',
+  login_pending: '等待登录…',
+  logged_in: '已登录',
+}
 
 export default function AccountsPage() {
   const { t } = useI18n()
@@ -10,6 +17,21 @@ export default function AccountsPage() {
 
   useEffect(() => {
     load()
+    // 监听后端识别到登录的事件，自动刷新账号列表
+    const unlistenPromise = listen('login-detected', () => {
+      load()
+    })
+    // 兜底：每 5 秒自动刷新账号列表（数量很小，开销可忽略）
+    const timer = setInterval(async () => {
+      try {
+        const data = await accountList()
+        setAccounts(data)
+      } catch { /* 忽略轮询失败 */ }
+    }, 5000)
+    return () => {
+      clearInterval(timer)
+      unlistenPromise.then((unlisten) => unlisten()).catch(() => {})
+    }
   }, [])
 
   async function load() {
@@ -26,7 +48,10 @@ export default function AccountsPage() {
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
-    if (!name.trim()) return
+    if (!name.trim()) {
+      alert('账号名称不能为空。请先在输入框输入账号名称（注意：如果豆包浏览器窗口获得了键盘焦点，输入内容会进入豆包页面，而不是此处）。')
+      return
+    }
     setLoading(true)
     try {
       const a = await accountAdd(name.trim())
@@ -36,6 +61,15 @@ export default function AccountsPage() {
       alert('创建失败: ' + e)
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleLogin(id: number) {
+    try {
+      await accountOpenLogin(id)
+      await load()
+    } catch (e) {
+      alert('打开登录窗口失败: ' + e)
     }
   }
 
@@ -51,7 +85,10 @@ export default function AccountsPage() {
 
   return (
     <div style={{ padding: '24px' }}>
-      <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '16px' }}>{t('nav.accounts')}</h2>
+      <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        {t('nav.accounts')}
+        <button onClick={load} style={{ fontSize: '12px', padding: '6px 12px', border: '1px solid #d1d5db', background: '#fff', borderRadius: '6px', cursor: 'pointer', fontWeight: '400' }}>刷新状态</button>
+      </h2>
       <form onSubmit={handleCreate} style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' }}>
         <input
           placeholder="账号名称"
@@ -81,8 +118,14 @@ export default function AccountsPage() {
             <tr key={a.id} style={{ borderBottom: '1px solid #e5e5e5' }}>
               <td style={{ padding: '12px', fontSize: '13px', color: '#6b7280' }}>{a.id}</td>
               <td style={{ padding: '12px', fontSize: '13px', fontWeight: '500' }}>{a.name}</td>
-              <td style={{ padding: '12px', fontSize: '13px', color: '#6b7280' }}>{a.status}</td>
+              <td style={{ padding: '12px', fontSize: '13px', color: '#6b7280' }}>{STATUS_LABEL[a.status] ?? a.status}</td>
               <td style={{ padding: '12px' }}>
+                <button
+                  onClick={() => handleLogin(a.id!)}
+                  style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '6px' }}
+                >
+                  打开登录窗口
+                </button>
                 <button
                   onClick={() => handleDelete(a.id!)}
                   style={{ background: '#dc2626', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}

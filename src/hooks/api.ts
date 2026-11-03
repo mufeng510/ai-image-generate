@@ -107,6 +107,10 @@ export async function accountAdd(name: string): Promise<Account> {
   return invoke('account_add', { name })
 }
 
+export async function accountOpenLogin(id: number): Promise<void> {
+  return invoke('account_open_login', { id })
+}
+
 export async function accountDelete(id: number): Promise<void> {
   return invoke('account_delete', { id })
 }
@@ -128,7 +132,7 @@ export async function taskCreate(name: string, project_id: number, account_id: n
 }
 
 export async function taskStart(id: number): Promise<void> {
-  return invoke('task_start', { id })
+  return invoke('task_start', { payload: { task_id: id } })
 }
 
 export async function taskPause(id: number): Promise<void> {

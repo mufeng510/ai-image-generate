@@ -12,3 +12,5 @@ output/
 prototype/.output/
 prototype/.userdata/
 *.user.js
+.tmp/
+prototype/src/.output/

@@ -121,6 +121,7 @@ class ImagePool {
       path: img.path,
       url: img.url,
       name: img.name,
+      folder: img.dirName,
       sha256: img.sha256,
     })));
     return {

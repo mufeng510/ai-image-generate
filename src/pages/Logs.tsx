@@ -11,7 +11,7 @@ export default function LogsPage() {
     message: string
     created_at?: string
   }[]>([])
-  const [loading, setLoading] = useState(false)
+  const [, setLoading] = useState(false)
 
   useEffect(() => {
     loadLogs()

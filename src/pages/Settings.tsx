@@ -3,9 +3,10 @@ import { settingsGet, settingsSet } from '@/hooks/api'
 import { useI18n } from '@/i18n'
 
 export default function SettingsPage() {
-  const { t, lang, setLang } = useI18n()
+  const { lang, setLang } = useI18n()
   const [projectRoot, setProjectRoot] = useState('')
   const [maxRetries, setMaxRetries] = useState('3')
+  const [checking, setChecking] = useState(false)
 
   async function load() {
     const v = await settingsGet('project_root')
@@ -14,12 +15,17 @@ export default function SettingsPage() {
     if (m) setMaxRetries(m)
   }
 
+  useEffect(() => {
+    load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   async function checkForUpdates() {
     setChecking(true)
     try {
       alert('检查更新需要先配置 tauri.conf.json 的 updater.endpoints，并使用签名密钥构建安装包。')
     } catch (e) {
-      alert('检查更新失败: ' + e.message)
+      alert('检查更新失败: ' + String(e))
     } finally {
       setChecking(false)
     }
@@ -89,9 +95,10 @@ export default function SettingsPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <button
               onClick={checkForUpdates}
+              disabled={checking}
               style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
             >
-              检查更新
+              {checking ? '检查中…' : '检查更新'}
             </button>
             <button
               onClick={downloadAndInstall}

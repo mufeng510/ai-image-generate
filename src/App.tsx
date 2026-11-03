@@ -73,8 +73,8 @@ export default function App() {
         {page === 'dashboard' && <DashboardPage />}
         {page === 'projects' && <ProjectsPage />}
         {page === 'accounts' && <AccountsPage />}
-        {page === 'tasks' && <ExecutionPage onTaskSelect={setSelectedTaskId} onBack={setPage} />}
-        {page === 'taskDetail' && selectedTaskId && <RoundDetail taskId={selectedTaskId} />}
+        {page === 'tasks' && <ExecutionPage onTaskSelect={(id) => { setSelectedTaskId(id); setPage('taskDetail') }} />}
+        {page === 'taskDetail' && selectedTaskId && <RoundDetail taskId={selectedTaskId} onBack={() => setPage('tasks')} />}
         {page === 'logs' && <LogsPage />}
         {page === 'settings' && <SettingsPage />}
       </main>

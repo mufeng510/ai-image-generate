@@ -45,6 +45,58 @@ function urlIdentity(url) {
   }
 }
 
+/** 解码 HTML/JSON 中的 \uXXXX 转义 */
+function decodeUnicodeEscapes(text) {
+  return text.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+}
+
+/** 从 HTML 文本解析 image_ori_raw（无水印原图）URL 列表 */
+function parseImageOriRaws(html) {
+  if (!html) return [];
+  const re = /image_ori_raw(?:\\":\{\\"url\\":\\"|":\{"url":")([^"]+)/g;
+  const candidates = [];
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    candidates.push(m[1]);
+  }
+
+  // 解码转义（HTML/JSON 中 URL 结尾可能残留转义反斜杠，必须去掉）
+  const decoded = candidates
+    .map((u) => decodeUnicodeEscapes(u))
+    .map((u) => u.replace(/&amp;/g, '&'))
+    .map((u) => u.replace(/\\+$/, ''))
+    .filter((u) => /^https?:\/\//i.test(u));
+
+  // 只要原始无水印图（/rc_gen_image/ + image_raw），按文件标识去重，优先 PNG
+  const byKey = new Map();
+  const extPriority = (url) => {
+    if (/\.png(?:[?~]|$)/i.test(url)) return 0;
+    if (/\.jpe?g(?:[?~]|$)/i.test(url)) return 1;
+    if (/\.heic(?:[?~]|$)/i.test(url)) return 2;
+    if (/\.webp(?:[?~]|$)/i.test(url)) return 3;
+    return 4;
+  };
+  const keyOf = (url) => {
+    try {
+      const u = new URL(url);
+      return u.origin + u.pathname.replace(/~tplv[^/]*/g, '');
+    } catch (_) {
+      return url.replace(/~tplv[^/]*/g, '');
+    }
+  };
+
+  for (const url of decoded) {
+    if (!url.includes('/rc_gen_image/') || !url.includes('image_raw')) continue;
+    const key = keyOf(url);
+    const cur = byKey.get(key);
+    if (!cur || extPriority(url) < extPriority(cur)) {
+      byKey.set(key, url);
+    }
+  }
+
+  return Array.from(byKey.values()).map((url) => ({ url, identity: keyOf(url) }));
+}
+
 /** 在 Playwright 页面中提取所有生成图片的 URL（DOM 扫描） */
 async function extractImagesFromDom(page) {
   return await page.evaluate(() => {
@@ -160,6 +212,8 @@ module.exports = {
   isHttpUrl,
   isUiAsset,
   urlIdentity,
+  decodeUnicodeEscapes,
+  parseImageOriRaws,
   extFromUrl,
   extractImagesFromDom,
   extractAndSaveImages,

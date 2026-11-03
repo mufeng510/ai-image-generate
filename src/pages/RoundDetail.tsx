@@ -6,7 +6,6 @@
  */
 
 import { useState, useEffect } from 'react'
-import { useI18n } from '@/i18n'
 import {
   taskListRounds,
   taskListImages,
@@ -30,6 +29,22 @@ const STATUS_LABELS: Record<string, string> = {
   needs_manual_intervention: '需人工干预',
 }
 
+const STATUS_COLORS: Record<string, string> = {
+  preparing: '#6b7280',
+  selecting_images: '#6b7280',
+  waiting_confirmation: '#d97706',
+  uploading: '#2563eb',
+  submitting: '#2563eb',
+  generating: '#2563eb',
+  downloading: '#2563eb',
+  verifying: '#2563eb',
+  completed: '#16a34a',
+  paused: '#ea580c',
+  failed: '#dc2626',
+  cancelled: '#6b7280',
+  needs_manual_intervention: '#dc2626',
+}
+
 const DOWNLOAD_STATUS_LABELS: Record<string, string> = {
   pending: '待下载',
   downloading: '下载中',
@@ -37,18 +52,10 @@ const DOWNLOAD_STATUS_LABELS: Record<string, string> = {
   failed: '失败',
 }
 
-const DOWNLOAD_STATUS_COLORS: Record<string, string> = {
-  pending: '#6b7280',
-  downloading: '#2563eb',
-  verified: '#16a34a',
-  failed: '#dc2626',
-}
-
-export default function RoundDetail({ taskId }: { taskId: number }) {
-  const { t } = useI18n()
+export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack?: () => void }) {
   const [rounds, setRounds] = useState<TaskRound[]>([])
   const [images, setImages] = useState<TaskImage[]>([])
-  const [loading, setLoading] = useState(false)
+  const [, setLoading] = useState(false)
   const [selectedRoundId, setSelectedRoundId] = useState<number | null>(null)
 
   useEffect(() => {
@@ -61,7 +68,7 @@ export default function RoundDetail({ taskId }: { taskId: number }) {
       const data = await taskListRounds(taskId)
       setRounds(data)
       if (data.length > 0 && !selectedRoundId) {
-        setSelectedRoundId(data[0].id ?? undefined)
+        setSelectedRoundId(data[0].id ?? null)
       }
     } catch (e) {
       console.error('加载轮次失败:', e)
@@ -94,6 +101,14 @@ export default function RoundDetail({ taskId }: { taskId: number }) {
     <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ fontSize: '20px', fontWeight: '600', margin: 0 }}>生成详情</h2>
+        {onBack && (
+          <button
+            onClick={onBack}
+            style={{ padding: '6px 12px', border: '1px solid #d1d5db', borderRadius: '6px', background: '#fff', cursor: 'pointer', fontSize: '13px' }}
+          >
+            ← 返回任务列表
+          </button>
+        )}
       </div>
 
       {/* 轮次列表 */}
@@ -117,7 +132,7 @@ export default function RoundDetail({ taskId }: { taskId: number }) {
                   cursor: 'pointer',
                   backgroundColor: selectedRoundId === round.id ? '#f0fdf4' : 'transparent',
                 }}
-                onClick={() => setSelectedRoundId(round.id ?? undefined)}
+                onClick={() => setSelectedRoundId(round.id ?? null)}
               >
                 <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>
                   第 {round.round_number ?? 0} 轮
@@ -150,7 +165,7 @@ export default function RoundDetail({ taskId }: { taskId: number }) {
                     <span style={{ color: '#16a34a', fontSize: '11px' }}>已选中</span>
                   ) : (
                     <button
-                      onClick={() => setSelectedRoundId(round.id ?? undefined)}
+                      onClick={() => setSelectedRoundId(round.id ?? null)}
                       style={{ background: '#f3f4f6', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
                     >
                       查看
@@ -198,7 +213,7 @@ export default function RoundDetail({ taskId }: { taskId: number }) {
                           alt={`图片 ${img.image_index}`}
                           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                           onError={(e) => {
-                            e.target.style.display = 'none'
+                            (e.target as HTMLElement).style.display = 'none'
                           }}
                         />
                       ) : (
@@ -212,11 +227,11 @@ export default function RoundDetail({ taskId }: { taskId: number }) {
                     </div>
                     <div style={{ padding: '8px' }}>
                       <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
-                        {img.url?.split('/').pop() || '未知'}
+                        {img.original_url?.split('/').pop() || '未知'}
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#9ca3af' }}>
                         <span>{img.format || '-'}</span>
-                        <span>{img.size ? (img.size / 1024).toFixed(1) + ' KB' : '-'}</span>
+                        <span>{img.file_size ? (img.file_size / 1024).toFixed(1) + ' KB' : '-'}</span>
                         <span style={{ color: img.download_status === 'verified' ? '#16a34a' : '#dc2626' }}>
                           {DOWNLOAD_STATUS_LABELS[img.download_status || ''] || img.download_status}
                         </span>

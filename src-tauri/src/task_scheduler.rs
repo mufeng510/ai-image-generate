@@ -129,19 +129,16 @@ impl Scheduler {
             return Ok(()); // 已启动
         }
 
-        let app_dir = dirs::data_local_dir()
-            .ok_or("无法获取本地数据目录")?
-            .join("DoubaoBatchImage")
-            .join("sidecar");
+        let index_js = resolve_sidecar_index(app)?;
 
         let node_exe = which_node()?;
         let mut child = Command::new(node_exe)
-            .arg(app_dir.join("src/index.js"))
+            .arg(&index_js)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("启动 sidecar 失败: {}", e))?;
+            .map_err(|e| format!("启动 sidecar 失败: {} (入口: {})", e, index_js.display()))?;
 
         let stdin = child.stdin.take().ok_or("无法获取 sidecar stdin")?;
         *stdin_guard = Some(stdin);
@@ -158,9 +155,11 @@ impl Scheduler {
         }
 
         // 启动 stdout 读取线程，将 sidecar 事件转发为 Tauri Event 并发送到事件通道
+        // 注意：必须使用 spawn_blocking —— 该线程内是同步阻塞的 std::io 读取，
+        // 若用 tokio::spawn 会永久占住异步工作线程，饿死整个调度器。
         let app_handle = app.app_handle().clone();
         let stdout = child.stdout.take().ok_or("无法获取 sidecar stdout")?;
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn_blocking(move || {
             use std::io::BufRead;
             let reader = std::io::BufReader::new(stdout);
             for line in reader.lines() {
@@ -171,6 +170,20 @@ impl Scheduler {
                         }
                         match serde_json::from_str::<serde_json::Value>(&line) {
                             Ok(event) => {
+                                // 登录检测事件：更新账号状态为 logged_in 并写日志
+                                if event.get("event").and_then(|v| v.as_str()) == Some("login_detected") {
+                                    let account_id = event.get("account_id").and_then(|v| v.as_i64());
+                                    if let Some(id) = account_id {
+                                        if let Ok(conn) = crate::db::get_connection() {
+                                            let _ = conn.execute(
+                                                "UPDATE accounts SET status = 'logged_in', last_used_at = ?1 WHERE id = ?2",
+                                                rusqlite::params![Utc::now().to_rfc3339(), id],
+                                            );
+                                            let _ = db_write_log(&conn, None, "info", &format!("账号 {} 登录已识别", id));
+                                        }
+                                        let _ = app_handle.emit("login-detected", serde_json::json!({ "account_id": id }));
+                                    }
+                                }
                                 let _ = app_handle.emit("sidecar-event", event.clone());
                                 // 同时发送到事件通道，供 execute_task 接收
                                 let _ = event_tx.send(event);
@@ -199,10 +212,10 @@ impl Scheduler {
             }
         });
 
-        // 启动 stderr 读取线程
+        // 启动 stderr 读取线程（同样使用 spawn_blocking，避免饿死异步运行时）
         let app_handle_err = app.app_handle().clone();
         let stderr = child.stderr.take().ok_or("无法获取 sidecar stderr")?;
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn_blocking(move || {
             use std::io::BufRead;
             let reader = std::io::BufReader::new(stderr);
             for line in reader.lines() {
@@ -278,6 +291,56 @@ fn which_node() -> Result<String, String> {
         return Ok(p);
     }
     Ok("node".to_string())
+}
+
+/**
+ * 解析 sidecar 入口 src/index.js 的路径。
+ *
+ * 优先级：
+ *   1. 环境变量 SIDECAR_INDEX（显式指定）；
+ *   2. 开发环境：CARGO_MANIFEST_DIR/../sidecar/src/index.js（源码树，便于本机测试）；
+ *   3. 打包环境：本地数据目录 DoubaoBatchImage/sidecar/src/index.js（由安装程序或构建脚本放置）。
+ */
+fn resolve_sidecar_index(_app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    if let Ok(p) = std::env::var("SIDECAR_INDEX") {
+        let path = std::path::PathBuf::from(p);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    // 开发树：src-tauri/../sidecar/src/index.js
+    let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("sidecar")
+        .join("src")
+        .join("index.js");
+    if dev_path.exists() {
+        return Ok(dev_path);
+    }
+
+    // 打包环境
+    let packaged = dirs::data_local_dir()
+        .ok_or("无法获取本地数据目录")?
+        .join("DoubaoBatchImage")
+        .join("sidecar")
+        .join("src")
+        .join("index.js");
+    if packaged.exists() {
+        return Ok(packaged);
+    }
+
+    Err(format!(
+        "未找到 sidecar 入口。请设置 SIDECAR_INDEX 环境变量，或确认已随应用部署 sidecar（期望位置: {}）",
+        packaged.display()
+    ))
+}
+
+/** 本地数据目录（DoubaoBatchImage），用于账号数据目录根 */
+pub fn app_data_dir() -> Result<std::path::PathBuf, String> {
+    Ok(dirs::data_local_dir()
+        .ok_or("无法获取本地数据目录")?
+        .join("DoubaoBatchImage"))
 }
 
 /** 数据库：更新任务状态 */
@@ -380,222 +443,351 @@ pub async fn scheduler_loop(app: AppHandle, scheduler: Arc<Scheduler>) {
     }
 }
 
+/** 等待某个 result 命令的结果（带超时）；返回 `result` 或 `error` 行 */
+async fn wait_result(
+    rx: &mut mpsc::UnboundedReceiver<serde_json::Value>,
+    cmd: &str,
+    timeout_s: u64,
+) -> Option<serde_json::Value> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_s);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match tokio::time::timeout(remaining.min(Duration::from_secs(1)), rx.recv()).await {
+            Ok(Some(ev)) => {
+                let t = ev.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let c = ev.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+                if (t == "result" || t == "error") && c == cmd {
+                    return Some(ev);
+                }
+            }
+            Ok(None) => return None,
+            Err(_) => continue,
+        }
+    }
+}
+
+/** 从项目读取提示词（prompt.txt 优先，其次项目记录的 prompt_path） */
+fn read_prompt(project_root: &std::path::Path, prompt_path: Option<&str>) -> String {
+    let mut candidates: Vec<std::path::PathBuf> = vec![project_root.join("prompt.txt")];
+    if let Some(p) = prompt_path {
+        if !p.is_empty() {
+            candidates.push(std::path::PathBuf::from(p));
+        }
+    }
+    for c in candidates {
+        if let Ok(text) = std::fs::read_to_string(&c) {
+            if !text.trim().is_empty() {
+                return text.trim().to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/** 依据失败原因决定任务状态与提示 */
+fn classify_gen_failure(reason: &str) -> (&'static str, &'static str) {
+    match reason {
+        "login_required" => ("needs_manual_intervention", "登录失效，请在可见浏览器中手动登录后继续"),
+        "upload_input_not_found" | "submit_button_not_found" | "textbox_not_found" => {
+            ("needs_manual_intervention", "未找到页面关键元素，网页结构可能已变化，请查看诊断截图")
+        }
+        "goto_failed" | "generation_timeout" => ("failed", "网络或生成超时"),
+        "no_reference_images" | "empty_prompt" => ("failed", "缺少参考图片或提示词"),
+        _ => ("needs_manual_intervention", "生图失败，需人工确认"),
+    }
+}
+
 /** 执行单个任务（完整状态机） */
 async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
-    let _app_handle = app.clone();
+    let tid = task.id.expect("task id");
 
-    // 辅助：更新状态 + 写日志
-    let set_status = |app: &AppHandle, conn: &Connection, tid: i64, status: &str, msg: &str| {
-        let _ = db_update_task_status(conn, tid, status);
-        let _ = db_write_log(conn, Some(tid), "info", msg);
+    // 辅助：更新状态 + 写日志 + 广播事件
+    let set_status = |app: &AppHandle, status: &str, msg: &str| {
+        match get_connection() {
+            Ok(conn) => {
+                if let Err(e) = db_update_task_status(&conn, tid, status) {
+                    eprintln!("[调度器] 更新任务状态失败 ({}): {}", status, e);
+                }
+                let _ = db_write_log(&conn, Some(tid), "info", msg);
+            }
+            Err(e) => eprintln!("[调度器] 打开数据库失败（状态未写入 {}）: {}", status, e),
+        }
         let _ = app.emit("task-status-changed", serde_json::json!({
             "task_id": tid,
             "status": status,
         }));
     };
 
-    // 1. preparing
-    {
-        let conn = get_connection().unwrap();
-        set_status(&app, &conn, task.id.expect("task id"), "preparing", "任务准备中");
-        drop(conn);
-    }
-    sleep(Duration::from_millis(500)).await;
-
-    // 启动 sidecar（若未启动）
+    // 1. preparing：启动 sidecar
+    set_status(&app, "preparing", "任务准备中");
     if let Err(e) = scheduler.start_sidecar(&app) {
-        let conn = get_connection().unwrap();
-        set_status(&app, &conn, task.id.expect("task id"), "failed", &format!("启动自动化浏览器失败: {}", e));
-        drop(conn);
+        set_status(&app, "failed", &format!("启动自动化侧车失败: {}", e));
         scheduler.release();
         return;
     }
 
-    // 2. selecting_images：扫描参考图片并抽取
-    {
-        let conn = get_connection().unwrap();
-        set_status(&app, &conn, task.id.expect("task id"), "selecting_images", "扫描参考图片并抽取");
-        drop(conn);
-    }
-
-    // 获取项目根目录和账号 user_data_dir
-    let project_root = {
-        let conn = get_connection().unwrap();
-        let result: String = {
-            let mut stmt = conn
-                .prepare("SELECT p.root_path FROM tasks t JOIN projects p ON t.project_id = p.id WHERE t.id = ?1")
-                .unwrap();
-            stmt.query_row([task.id], |row| row.get::<_, String>(0)).unwrap()
-        };
-        drop(conn);
-        result
-    };
-
-    // 扫描参考图片目录（通过 sidecar）
-    let scan_cmd = serde_json::json!({
-        "cmd": "scan_images",
-        "project_id": task.project_id,
-        "root_path": project_root,
-    });
-    if let Err(e) = scheduler.send_sidecar_cmd(scan_cmd) {
-        let conn = get_connection().unwrap();
-        set_status(&app, &conn, task.id.expect("task id"), "failed", &format!("发送扫描命令失败: {}", e));
-        drop(conn);
-        scheduler.release();
-        return;
-    }
-
-    // 等待 sidecar 返回扫描结果（简化：实际应监听 sidecar-event，暂时等待）
-    sleep(Duration::from_secs(3)).await;
-
-    // 3. generating：通过 sidecar 提取图片
-    {
-        let conn = get_connection().unwrap();
-        set_status(&app, &conn, task.id.expect("task id"), "generating", "提取生成的图片");
-        drop(conn);
-    }
-
-    // 获取获取图片的接收器（从 sidecar_event_rx 克隆，避免所有权问题）
+    // 取出 sidecar 事件接收器（整个任务期间持有）
     let mut event_rx: mpsc::UnboundedReceiver<serde_json::Value> = {
-        let mut guard = scheduler.sidecar_event_rx.lock().map_err(|e| e.to_string()).unwrap();
-        guard.take().ok_or("sidecar 事件通道未初始化").unwrap()
-    };
-
-    // 发送 extract_images 命令给 sidecar
-    let extract_cmd = serde_json::json!({
-        "cmd": "extract_images",
-        "task_id": task.id,
-    });
-    if let Err(e) = scheduler.send_sidecar_cmd(extract_cmd) {
-        let conn = get_connection().unwrap();
-        set_status(&app, &conn, task.id.expect("task id"), "failed", &format!("发送提取命令失败: {}", e));
-        drop(conn);
-        scheduler.release();
-        return;
-    }
-
-    // 等待 sidecar 返回图片提取结果（最多等待 60 秒）
-    let extracted_images = {
-        let mut deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        let mut images: Vec<serde_json::Value> = Vec::new();
-        loop {
-            match tokio::time::timeout(Duration::from_secs(1), event_rx.recv()).await {
-                Ok(event) => {
-                    let event = event.expect("sidecar 事件通道已关闭");
-                    let event_type = event.get("event").and_then(|v| v.as_str()).unwrap_or("");
-                    if event_type == "images_extracted" {
-                        if let Some(arr) = event.get("images").and_then(|v| v.as_array()) {
-                            images = arr.clone();
-                        }
-                        break;
-                    } else if event_type == "error" {
-                        let conn = get_connection().unwrap();
-                        set_status(&app, &conn, task.id.expect("task id"), "failed", &format!("图片提取失败: {:?}", event));
-                        drop(conn);
-                        scheduler.release();
-                        return;
-                    }
-                }
-                Err(_) => {
-                    if deadline.elapsed() > Duration::from_secs(60) {
-                        break;
-                    }
-                    continue;
-                }
+        let mut guard = match scheduler.sidecar_event_rx.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                set_status(&app, "failed", "sidecar 事件通道锁定失败");
+                scheduler.release();
+                return;
             }
-            if deadline.elapsed() > Duration::from_secs(60) {
-                break;
+        };
+        match guard.take() {
+            Some(rx) => rx,
+            None => {
+                set_status(&app, "failed", "sidecar 事件通道未初始化");
+                scheduler.release();
+                return;
             }
         }
-        images
     };
 
-    // 创建 task_round 记录
-    let round_id = {
-        let conn = get_connection().unwrap();
-        let now = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO task_rounds (task_id, round_number, prompt_snapshot, references_json, status, submitted_at) VALUES (?1, ?2, ?3, ?4, 'submitting', ?5)",
-            rusqlite::params![task.id, task.current_round.unwrap_or(1), "auto_capture", "[]", now],
-        ).unwrap();
-        let rid = conn.last_insert_rowid();
-        let _ = db_write_log(&conn, Some(task.id.expect("task id")), "info", &format!("发现 {} 张图片，开始下载", extracted_images.len()));
-        drop(conn);
-        rid
+    // 读取任务上下文：项目根目录、账号 id、账号 user_data_dir、提示词
+    let (project_root, account_id, user_data_dir, prompt_path) = {
+        let conn = match get_connection() {
+            Ok(c) => c,
+            Err(e) => {
+                set_status(&app, "failed", &format!("打开数据库失败: {}", e));
+                scheduler.release();
+                return;
+            }
+        };
+        let ctx: Result<(String, Option<i64>, String, Option<String>), rusqlite::Error> = conn.query_row(
+            "SELECT p.root_path, t.account_id, COALESCE(a.user_data_dir, ''), p.prompt_path
+             FROM tasks t
+             JOIN projects p ON t.project_id = p.id
+             LEFT JOIN accounts a ON t.account_id = a.id
+             WHERE t.id = ?1",
+            [tid],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        );
+        match ctx {
+            Ok(c) => c,
+            Err(e) => {
+                set_status(&app, "failed", &format!("读取任务上下文失败: {}", e));
+                scheduler.release();
+                return;
+            }
+        }
     };
 
-    // 4. downloading：通过 sidecar 下载图片
-    {
-        let conn = get_connection().unwrap();
-        set_status(&app, &conn, task.id.expect("task id"), "downloading", "下载图片");
-        drop(conn);
+    let account_id = match account_id {
+        Some(a) => a,
+        None => {
+            set_status(&app, "failed", "任务未绑定账号");
+            scheduler.release();
+            return;
+        }
+    };
+
+    let project_root = std::path::PathBuf::from(&project_root);
+    let prompt = read_prompt(&project_root, prompt_path.as_deref());
+    let round_number = task.current_round.unwrap_or(0) + 1;
+
+    // 2. 启动可见浏览器（每账号独立 userDataDir）
+    set_status(&app, "preparing", "启动可见浏览器…");
+    eprintln!("[调度器] 任务 {} 启动可见浏览器…", tid);
+    eprintln!("[调度器] 发送 start_browser 命令 (account_id={})…", account_id);
+    let start_cmd = serde_json::json!({
+        "cmd": "start_browser",
+        "account_id": account_id,
+        "user_data_dir": user_data_dir,
+    });
+    if let Err(e) = scheduler.send_sidecar_cmd(start_cmd) {
+        set_status(&app, "failed", &format!("发送启动浏览器命令失败: {}", e));
+        scheduler.release();
+        return;
+    }
+    eprintln!("[调度器] 等待 start_browser 响应 (最长 90 秒)…");
+    let res = wait_result(&mut event_rx, "start_browser", 90).await;
+    eprintln!("[调度器] start_browser 响应: {:?}", res);
+
+    // 3. selecting_images：扫描参考图 + 文件夹独立抽取 5 张
+    set_status(&app, "selecting_images", "扫描参考图片并抽取本轮图片");
+    eprintln!("[调度器] 发送 scan_images 命令…");
+    let state_dir = crate::task_scheduler::app_data_dir()
+        .map(|d| d.join("pool").join(format!("project_{}", task.project_id.unwrap_or(0))))
+        .unwrap_or_else(|_| project_root.join(".doubao"));
+    let units_file = state_dir.join(format!("round_{}.units.json", round_number));
+    let scan_cmd = serde_json::json!({
+        "cmd": "scan_images",
+        "task_id": tid,
+        "root_path": project_root.to_string_lossy(),
+        "round_number": round_number,
+        "state_dir": state_dir.to_string_lossy(),
+        "units_file": units_file.to_string_lossy(),
+        "count": 5,
+    });
+    if let Err(e) = scheduler.send_sidecar_cmd(scan_cmd) {
+        set_status(&app, "failed", &format!("发送扫描命令失败: {}", e));
+        scheduler.release();
+        return;
+    }
+    let scan_res = wait_result(&mut event_rx, "scan_images", 120).await;
+    eprintln!("[调度器] scan_images 响应: {:?}", scan_res);
+    let scan_ok = scan_res.as_ref().and_then(|v| v.get("ok")).and_then(|v| v.as_bool()).unwrap_or(false);
+    if !scan_ok {
+        let reason = scan_res.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str()).unwrap_or("unknown");
+        set_status(&app, "failed", &format!("参考图片抽取失败: {}", reason));
+        scheduler.release();
+        return;
+    }
+    let selected: Vec<serde_json::Value> = scan_res.as_ref()
+        .and_then(|v| v.get("selected")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    if selected.is_empty() {
+        set_status(&app, "failed", "本轮未抽取到任何参考图片");
+        scheduler.release();
+        return;
     }
 
-    // 准备下载项
-    let download_items: Vec<serde_json::Value> = extracted_images.iter().enumerate().map(|(idx, img)| {
+    // 持久化 image_pool_records + 写日志
+    {
+        if let Ok(conn) = get_connection() {
+            let total_images = scan_res.as_ref().and_then(|v| v.get("total_images")).and_then(|v| v.as_i64()).unwrap_or(0);
+            let folder_count = scan_res.as_ref().and_then(|v| v.get("folders")).and_then(|v| v.as_i64()).unwrap_or(0);
+            for item in &selected {
+                let path = item.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let sha = item.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
+                let _ = conn.execute(
+                    "INSERT INTO image_pool_records (project_id, image_path, sha256, last_used_at, use_count) VALUES (?1, ?2, ?3, ?4, 1)",
+                    rusqlite::params![task.project_id.unwrap_or(0), path, sha, Utc::now().to_rfc3339()],
+                );
+            }
+            let _ = db_write_log(&conn, Some(tid), "info",
+                &format!("本轮抽取 {} 张参考图（共 {} 张候选、{} 个文件夹）", selected.len(), total_images, folder_count));
+        }
+    }
+
+    // 创建本轮记录
+    let refs_json = serde_json::to_string(&selected).unwrap_or_else(|_| "[]".to_string());
+    let round_id = {
+        let conn = match get_connection() {
+            Ok(c) => c,
+            Err(e) => {
+                set_status(&app, "failed", &format!("打开数据库失败: {}", e));
+                scheduler.release();
+                return;
+            }
+        };
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO task_rounds (task_id, round_number, prompt_snapshot, references_json, status, submitted_at) VALUES (?1, ?2, ?3, ?4, 'selecting_images', ?5)",
+            rusqlite::params![tid, round_number, prompt.clone(), refs_json, now],
+        ).unwrap();
+        conn.last_insert_rowid()
+    };
+
+    // 4. uploading/submitting/generating：通过 sidecar 上传、提交、等待生成
+    set_status(&app, "uploading", "上传参考图片并提交生图");
+    let refs_paths: Vec<String> = selected.iter()
+        .filter_map(|v| v.get("path").and_then(|s| s.as_str()).map(|s| s.to_string()))
+        .collect();
+    let gen_cmd = serde_json::json!({
+        "cmd": "generate_images",
+        "task_id": tid,
+        "account_id": account_id,
+        "project_root": project_root.to_string_lossy(),
+        "refs": refs_paths,
+        "prompt": prompt,
+    });
+    if let Err(e) = scheduler.send_sidecar_cmd(gen_cmd) {
+        set_status(&app, "failed", &format!("发送生图命令失败: {}", e));
+        scheduler.release();
+        return;
+    }
+    set_status(&app, "submitting", "已提交，等待生成完成");
+    let gen_res = wait_result(&mut event_rx, "generate_images", 300).await;
+    let gen_ok = gen_res.as_ref().and_then(|v| v.get("ok")).and_then(|v| v.as_bool()).unwrap_or(false);
+    if !gen_ok {
+        let reason = gen_res.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str()).unwrap_or("unknown");
+        let msg = gen_res.as_ref().and_then(|v| v.get("message")).and_then(|v| v.as_str()).unwrap_or("");
+        let (status, log) = classify_gen_failure(reason);
+        if let Ok(conn) = get_connection() {
+            let _ = conn.execute(
+                "UPDATE task_rounds SET status = 'failed', failure_reason = ?1, completed_at = ?2 WHERE id = ?3",
+                rusqlite::params![format!("{}: {}", reason, msg), Utc::now().to_rfc3339(), round_id],
+            );
+            let _ = db_write_log(&conn, Some(tid), "error", &format!("生图未完成（{}）: {} {}", reason, msg, log));
+        }
+        set_status(&app, status, &format!("生图未完成（{}）: {} {}", reason, msg, log));
+        scheduler.release();
+        return;
+    }
+
+    // 5. generating → 提取：DOM 扫描生成图片 URL
+    set_status(&app, "generating", "生成完成，提取图片 URL");
+    let extract_cmd = serde_json::json!({
+        "cmd": "extract_images",
+        "task_id": tid,
+        "account_id": account_id,
+        "project_root": project_root.to_string_lossy(),
+    });
+    if let Err(e) = scheduler.send_sidecar_cmd(extract_cmd) {
+        set_status(&app, "failed", &format!("发送提取命令失败: {}", e));
+        scheduler.release();
+        return;
+    }
+    let extract_res = wait_result(&mut event_rx, "extract_images", 180).await;
+    let extract_ok = extract_res.as_ref().and_then(|v| v.get("ok")).and_then(|v| v.as_bool()).unwrap_or(false);
+    let raw_images: Vec<serde_json::Value> = extract_res.as_ref()
+        .and_then(|v| v.get("images")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    if !extract_ok || raw_images.is_empty() {
+        let reason = extract_res.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str()).unwrap_or("unknown");
+        if let Ok(conn) = get_connection() {
+            let _ = conn.execute(
+                "UPDATE task_rounds SET status = 'failed', failure_reason = ?1, completed_at = ?2 WHERE id = ?3",
+                rusqlite::params![reason, Utc::now().to_rfc3339(), round_id],
+            );
+        }
+        set_status(&app, "needs_manual_intervention", &format!("未提取到生成图片（{}），请查看诊断信息", reason));
+        scheduler.release();
+        return;
+    }
+
+    // 6. downloading：下载到 output/round_<n>
+    set_status(&app, "downloading", "下载生成图片");
+    let round_dir = project_root.join("output").join(format!("round_{}", round_number));
+    let download_items: Vec<serde_json::Value> = raw_images.iter().enumerate().map(|(idx, img)| {
         serde_json::json!({
             "url": img.get("url").and_then(|v| v.as_str()).unwrap_or(""),
             "index": idx,
         })
     }).collect();
-
     let download_cmd = serde_json::json!({
         "cmd": "download_images",
-        "task_id": task.id,
+        "task_id": tid,
+        "account_id": account_id,
         "round_id": round_id,
+        "round_dir": round_dir.to_string_lossy(),
         "images": download_items,
     });
     if let Err(e) = scheduler.send_sidecar_cmd(download_cmd) {
-        let conn = get_connection().unwrap();
-        set_status(&app, &conn, task.id.expect("task id"), "failed", &format!("发送下载命令失败: {}", e));
-        drop(conn);
+        set_status(&app, "failed", &format!("发送下载命令失败: {}", e));
         scheduler.release();
         return;
     }
+    let dl_res = wait_result(&mut event_rx, "download_images", 300).await;
+    let download_results: Vec<serde_json::Value> = dl_res.as_ref()
+        .and_then(|v| v.get("results")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
-    // 等待下载完成（最多 120 秒）
-    let download_results: Vec<serde_json::Value> = {
-        let mut deadline = tokio::time::Instant::now() + Duration::from_secs(120);
-        let mut results: Vec<serde_json::Value> = Vec::new();
-        loop {
-            if deadline.elapsed() > Duration::from_secs(120) {
-                break;
-            }
-            match tokio::time::timeout(Duration::from_secs(1), event_rx.recv()).await {
-                Ok(event) => {
-                    let event = event.expect("sidecar 事件通道已关闭");
-                    let event_type = event.get("event").and_then(|v| v.as_str()).unwrap_or("");
-                    if event_type == "download_completed" {
-                        if let Some(arr) = event.get("results").and_then(|v| v.as_array()) {
-                            results = arr.clone();
-                        }
-                        break;
-                    } else if event_type == "error" {
-                        let conn = get_connection().unwrap();
-                        set_status(&app, &conn, task.id.expect("task id"), "failed", &format!("下载失败: {:?}", event));
-                        drop(conn);
-                        scheduler.release();
-                        return;
-                    }
-                }
-                Err(_) => {
-                    if deadline.elapsed() > Duration::from_secs(120) {
-                        break;
-                    }
-                    continue;
-                }
-            }
-            if deadline.elapsed() > Duration::from_secs(120) {
-                break;
-            }
-        }
-        results
-    };
-
-    // 5. verifying：写入图片记录并更新轮次状态
+    // 7. verifying：写入图片记录、计算成功数
+    let mut success_count = 0i64;
     {
-        let conn = get_connection().unwrap();
-        let mut success_count = 0;
+        let conn = match get_connection() {
+            Ok(c) => c,
+            Err(e) => {
+                set_status(&app, "failed", &format!("打开数据库失败: {}", e));
+                scheduler.release();
+                return;
+            }
+        };
         for (i, item) in download_results.iter().enumerate() {
             let ok = item.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
             let path = item.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -603,16 +795,12 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
             let sha256 = item.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let ext = item.get("ext").and_then(|v| v.as_str()).unwrap_or("png").to_string();
             let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-            if ok {
-                success_count += 1;
-            }
-
-            conn.execute(
+            if ok { success_count += 1; }
+            let _ = conn.execute(
                 "INSERT INTO task_images (task_round_id, image_index, original_url, saved_path, sha256, file_size, format, download_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 rusqlite::params![
                     round_id,
-                    i + 1,
+                    (i as i64) + 1,
                     url,
                     path,
                     if sha256.is_empty() { None } else { Some(sha256) },
@@ -620,31 +808,42 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
                     ext,
                     if ok { "verified" } else { "failed" },
                 ],
-            ).unwrap();
+            );
         }
 
-        // 更新轮次状态
-        let round_status = if success_count == download_results.len() { "completed" } else { "completed" };
-        conn.execute(
+        let total = download_results.len() as i64;
+        let round_status = if success_count > 0 { "completed" } else { "failed" };
+        let _ = conn.execute(
             "UPDATE task_rounds SET status = ?1, success_count = ?2, completed_at = ?3 WHERE id = ?4",
             rusqlite::params![round_status, success_count, Utc::now().to_rfc3339(), round_id],
-        ).unwrap();
-        drop(conn);
+        );
+        let _ = db_write_log(&conn, Some(tid), "info",
+            &format!("本轮下载完成：成功 {}/{} 张", success_count, total));
     }
 
-    // 6. completed
-    {
-        let conn = get_connection().unwrap();
+    // 8. completed / failed（无成功下载则不得标记已完成）
+    if success_count > 0 {
         let now = Utc::now().to_rfc3339();
-        conn.execute(
-            "UPDATE tasks SET status = 'completed', updated_at = ?1, completed_at = ?1 WHERE id = ?2",
-            rusqlite::params![now, task.id.expect("task id")],
-        ).unwrap();
-        let _ = db_write_log(&conn, Some(task.id.expect("task id")), "info", "任务完成");
-        drop(conn);
+        if let Ok(conn) = get_connection() {
+            let _ = conn.execute(
+                "UPDATE tasks SET status = 'completed', current_round = ?1, updated_at = ?2, completed_at = ?2 WHERE id = ?3",
+                rusqlite::params![round_number, now, tid],
+            );
+            let _ = db_write_log(&conn, Some(tid), "info", &format!("任务完成：本轮成功下载 {} 张图片", success_count));
+        }
+        set_status(&app, "completed", "任务完成");
+        let _ = app.emit("task-completed", serde_json::json!({ "task_id": tid }));
+    } else {
+        if let Ok(conn) = get_connection() {
+            let _ = conn.execute(
+                "UPDATE tasks SET status = 'failed', updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![Utc::now().to_rfc3339(), tid],
+            );
+            let _ = db_write_log(&conn, Some(tid), "error", "任务失败：本轮未成功下载任何图片");
+        }
+        set_status(&app, "failed", "任务失败：未成功下载任何图片");
     }
 
-    let _ = app.emit("task-completed", serde_json::json!({ "task_id": task.id.expect("task id") }));
     scheduler.release();
 }
 

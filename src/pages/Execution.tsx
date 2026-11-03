@@ -14,10 +14,11 @@ import {
   taskPause,
   taskResume,
   taskCancel,
-  taskDetail,
-  taskListRounds,
-  taskListImages,
+  projectList,
+  accountList,
   type Task,
+  type Project,
+  type Account,
 } from '@/hooks/api'
 import { listen } from '@tauri-apps/api/event'
 
@@ -58,6 +59,11 @@ const STATUS_COLORS: Record<string, string> = {
 export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: number) => void }) {
   const { t } = useI18n()
   const [tasks, setTasks] = useState<Task[]>([])
+  const [projects, setProjects] = useState<Project[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [name, setName] = useState('')
+  const [projectId, setProjectId] = useState('')
+  const [accountId, setAccountId] = useState('')
   const [logs, setLogs] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -75,9 +81,14 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
 
   useEffect(() => {
     loadTasks()
+    projectList().then(setProjects).catch(() => {})
+    accountList().then(setAccounts).catch(() => {})
 
+    let unlistenStatus: (() => void) | null = null
+    let unlistenComplete: (() => void) | null = null
+    let unlistenLog: (() => void) | null = null
     ;(async () => {
-      const unlistenStatus = await listen<{ task_id: number; status: string }>(
+      unlistenStatus = await listen<{ task_id: number; status: string }>(
         'task-status-changed',
         (event) => {
           const { task_id, status } = event.payload
@@ -88,7 +99,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
         }
       )
 
-      const unlistenComplete = await listen<{ task_id: number }>(
+      unlistenComplete = await listen<{ task_id: number }>(
         'task-completed',
         (event) => {
           const { task_id } = event.payload
@@ -99,20 +110,20 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
         }
       )
 
-      const unlistenLog = await listen<{ level: string; message: string }>(
+      unlistenLog = await listen<{ level: string; message: string }>(
         'sidecar-log',
         (event) => {
           const { level, message } = event.payload
           addLog(`[${level}] ${message}`)
         }
       )
-
-      return () => {
-        unlistenStatus.then((u) => u())
-        unlistenComplete.then((u) => u())
-        unlistenLog.then((u) => u())
-      }
     })()
+
+    return () => {
+      unlistenStatus?.()
+      unlistenComplete?.()
+      unlistenLog?.()
+    }
   }, [loadTasks])
 
   const addLog = (message: string) => {
@@ -120,9 +131,29 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
     setLogs((prev) => [`[${time}] ${message}`, ...prev].slice(0, 100))
   }
 
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault()
+    if (!name.trim() || !projectId || !accountId) {
+      alert('请填写任务名称并选择项目和账号')
+      return
+    }
+    setLoading(true)
+    try {
+      await taskCreate(name.trim(), Number(projectId), Number(accountId))
+      setName('')
+      setProjectId('')
+      setAccountId('')
+      await loadTasks()
+    } catch (err) {
+      alert('创建任务失败: ' + err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const handleStart = async (id: number) => {
     try {
-      await taskStart({ task_id: id })
+      await taskStart(id)
       await loadTasks()
     } catch (e) {
       alert('启动失败: ' + e)
@@ -149,6 +180,42 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
           刷新
         </button>
       </div>
+
+      <form onSubmit={handleCreate} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+        <input
+          placeholder="任务名称（例如：奶瓶收纳盒生图 1）"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          style={{ flex: '1 1 220px', minWidth: '180px', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+        />
+        <select
+          value={projectId}
+          onChange={(e) => setProjectId(e.target.value)}
+          style={{ padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', minWidth: '180px' }}
+        >
+          <option value="">选择项目…</option>
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>项目 #{p.id} {p.name}</option>
+          ))}
+        </select>
+        <select
+          value={accountId}
+          onChange={(e) => setAccountId(e.target.value)}
+          style={{ padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', minWidth: '180px' }}
+        >
+          <option value="">选择账号…</option>
+          {accounts.map((a) => (
+            <option key={a.id} value={a.id}>账号 #{a.id} {a.name}</option>
+          ))}
+        </select>
+        <button
+          type="submit"
+          disabled={loading}
+          style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+        >
+          创建任务
+        </button>
+      </form>
 
       <div style={{ background: '#fff', border: '1px solid #e5e5e5', borderRadius: '12px', overflow: 'hidden' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>

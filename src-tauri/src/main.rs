@@ -20,9 +20,12 @@ fn main() {
             commands::project_list,
             commands::project_create,
             commands::project_delete,
+            commands::project_get,
             commands::account_list,
             commands::account_add,
             commands::account_delete,
+            commands::account_get,
+            commands::account_open_login,
             commands::settings_get,
             commands::settings_set,
             commands::task_list,
@@ -45,7 +48,7 @@ fn main() {
             // 在闭包外克隆 Arc 和 AppHandle，避免借用逃离
             let app_handle = app.app_handle().clone();
             let scheduler = app.state::<Arc<Scheduler>>().inner().clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 task_scheduler::scheduler_loop(app_handle, scheduler).await;
             });
             Ok(())

@@ -40,7 +40,12 @@ pub struct TaskUpdateRoundPayload {
     pub failure_reason: Option<String>,
 }
 
-#[tauri::command]
+/** 确保 sidecar 已启动（供登录等非任务型命令使用） */
+fn manager_ensure_sidecar(app: &AppHandle, scheduler: &Scheduler) -> Result<(), String> {
+    scheduler.start_sidecar(app)
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub async fn project_list() -> Result<Vec<Project>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
@@ -61,10 +66,14 @@ pub async fn project_list() -> Result<Vec<Project>, String> {
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn project_create(name: String, root_path: String) -> Result<Project, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
+    // 创建项目根目录与参考图片目录，便于用户直接放入参考图片
+    let root = std::path::PathBuf::from(&root_path);
+    let _ = std::fs::create_dir_all(root.join("references"));
+    let _ = std::fs::create_dir_all(root.join("output"));
     conn.execute(
         "INSERT INTO projects (name, root_path, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
         rusqlite::params![name, root_path, now],
@@ -81,7 +90,7 @@ pub async fn project_create(name: String, root_path: String) -> Result<Project, 
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn project_delete(id: i64) -> Result<(), String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])
@@ -89,7 +98,7 @@ pub async fn project_delete(id: i64) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn account_list() -> Result<Vec<Account>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
@@ -113,10 +122,16 @@ pub async fn account_list() -> Result<Vec<Account>, String> {
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn account_add(name: String) -> Result<Account, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
-    let user_data_dir = format!("./accounts/{}/user-data", name);
+    // 每个账号独立的用户数据目录（绝对路径，便于传给 Sidecar 启动 Chromium 持久化上下文）
+    let user_data_dir = crate::task_scheduler::app_data_dir()?
+        .join("accounts")
+        .join(&name)
+        .join("user-data")
+        .to_string_lossy()
+        .to_string();
     let now = Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO accounts (name, user_data_dir, status, success_count, submit_count, created_at) VALUES (?1, ?2, 'unknown', 0, 0, ?3)",
@@ -137,7 +152,7 @@ pub async fn account_add(name: String) -> Result<Account, String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn account_delete(id: i64) -> Result<(), String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM accounts WHERE id = ?1", rusqlite::params![id])
@@ -145,7 +160,7 @@ pub async fn account_delete(id: i64) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn settings_get(key: String) -> Result<Option<String>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare("SELECT value FROM app_settings WHERE key = ?1").map_err(|e| e.to_string())?;
@@ -157,7 +172,7 @@ pub async fn settings_get(key: String) -> Result<Option<String>, String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn settings_set(key: String, value: String) -> Result<(), String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     conn.execute(
@@ -168,7 +183,7 @@ pub async fn settings_set(key: String, value: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn task_list() -> Result<Vec<Task>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
@@ -194,7 +209,7 @@ pub async fn task_list() -> Result<Vec<Task>, String> {
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn task_create(name: String, project_id: i64, account_id: i64) -> Result<Task, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
@@ -219,7 +234,7 @@ pub async fn task_create(name: String, project_id: i64, account_id: i64) -> Resu
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn task_start(
     app: AppHandle,
     scheduler: State<'_, Arc<Scheduler>>,
@@ -243,7 +258,7 @@ pub async fn task_start(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn task_pause(id: i64) -> Result<(), String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     conn.execute(
@@ -254,7 +269,7 @@ pub async fn task_pause(id: i64) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn task_resume(id: i64) -> Result<(), String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     conn.execute(
@@ -265,7 +280,7 @@ pub async fn task_resume(id: i64) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn task_cancel(id: i64) -> Result<(), String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     conn.execute(
@@ -276,7 +291,7 @@ pub async fn task_cancel(id: i64) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn task_detail(id: i64) -> Result<Option<Task>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare("SELECT id, name, project_id, account_id, status, current_round, total_rounds, created_at, updated_at, started_at, completed_at FROM tasks WHERE id = ?1").map_err(|e| e.to_string())?;
@@ -302,7 +317,7 @@ pub async fn task_detail(id: i64) -> Result<Option<Task>, String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn task_list_rounds(task_id: i64) -> Result<Vec<TaskRound>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
@@ -327,7 +342,7 @@ pub async fn task_list_rounds(task_id: i64) -> Result<Vec<TaskRound>, String> {
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn task_list_images(round_id: i64) -> Result<Vec<TaskImage>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
@@ -351,7 +366,7 @@ pub async fn task_list_images(round_id: i64) -> Result<Vec<TaskImage>, String> {
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn task_create_round(
     app: AppHandle,
     payload: TaskCreateRoundPayload,
@@ -378,7 +393,7 @@ pub async fn task_create_round(
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn task_add_image(
     app: AppHandle,
     payload: TaskAddImagePayload,
@@ -411,7 +426,7 @@ pub async fn task_add_image(
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn task_update_round(
     app: AppHandle,
     payload: TaskUpdateRoundPayload,
@@ -460,7 +475,79 @@ pub async fn task_update_round(
     Ok(row)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn account_get(id: i64) -> Result<Option<Account>, String> {
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, name, user_data_dir, status, image_threshold, success_count, submit_count, last_used_at, created_at FROM accounts WHERE id = ?1").map_err(|e| e.to_string())?;
+    let row = stmt.query_row([id], |row| {
+        Ok(Account {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            user_data_dir: row.get(2)?,
+            status: row.get(3)?,
+            image_threshold: row.get(4)?,
+            success_count: row.get(5)?,
+            submit_count: row.get(6)?,
+            last_used_at: row.get(7)?,
+            created_at: row.get(8)?,
+        })
+    });
+    match row {
+        Ok(a) => Ok(Some(a)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_get(id: i64) -> Result<Option<Project>, String> {
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, name, root_path, prompt_path, created_at, updated_at FROM projects WHERE id = ?1").map_err(|e| e.to_string())?;
+    let row = stmt.query_row([id], |row| {
+        Ok(Project {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            root_path: row.get(2)?,
+            prompt_path: row.get(3)?,
+            created_at: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    });
+    match row {
+        Ok(p) => Ok(Some(p)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/**
+ * 打开账号的可见浏览器用于手动登录（不接收账号密码，仅启动持久化上下文）。
+ */
+#[tauri::command(rename_all = "snake_case")]
+pub async fn account_open_login(
+    app: AppHandle,
+    scheduler: State<'_, Arc<Scheduler>>,
+    id: i64,
+) -> Result<(), String> {
+    let account = account_get(id).await?.ok_or("账号不存在")?;
+    let user_data_dir = account.user_data_dir.clone();
+    manager_ensure_sidecar(&app, &scheduler)?;
+    let cmd = serde_json::json!({
+        "cmd": "open_login",
+        "account_id": id,
+        "user_data_dir": user_data_dir,
+    });
+    scheduler.send_sidecar_cmd(cmd)?;
+    // 更新账号状态为登录中
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE accounts SET status = 'login_pending' WHERE id = ?1",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub async fn dashboard_stats() -> Result<DashboardStats, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let total_projects: i64 = conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0)).unwrap_or(0);
@@ -481,7 +568,7 @@ pub async fn dashboard_stats() -> Result<DashboardStats, String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn execution_logs(limit: i64) -> Result<Vec<LogEntry>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
