@@ -10,6 +10,7 @@
  *     {"cmd":"open_login","account_id":1,"user_data_dir":"..."}
  *     {"cmd":"scan_images","task_id":1,"root_path":"...","units_file":"..."}
  *     {"cmd":"generate_images","account_id":1,"project_root":"...","refs":[...],"prompt":"..."}
+ *     {"cmd":"resume_generate","account_id":1,"generation_timeout_ms":180000}
  *     {"cmd":"extract_images","account_id":1,"project_root":"..."}
  *     {"cmd":"download_images","account_id":1,"round_id":1,"round_dir":"...","images":[{"url":"...","index":0}]}
  *     {"cmd":"stop_browser","account_id":1}
@@ -100,43 +101,129 @@ async function startBrowser(accountId, userDataDir) {
   return { ok: true };
 }
 
-/** 尝试关闭营销/推广弹窗（如“每日签到”）——良性操作：ESC 或点关闭按钮，失败则继续并保存诊断 */
-async function dismissPromoModal(page) {
-  try {
-    const promo = page.locator('text=每日签到, text=免费用豆包工作');
-    if (await promo.count() === 0) return false;
-    log('info', '检测到推广弹窗，尝试关闭（ESC）');
-    await page.keyboard.press('Escape');
-    await page.waitForTimeout(800);
-    if (await promo.count() === 0) {
-      log('info', '推广弹窗已通过 ESC 关闭');
-      return true;
-    }
-    // 兜底：查找关闭按钮（aria-label 含“关闭/Close”，或弹窗内第一个按钮）
-    const closeSelectors = [
-      'button[aria-label*="关闭"]:visible',
-      'button[aria-label*="Close" i]:visible',
-      'div[role="dialog"] button:visible',
-      'div[class*="modal"] button:visible',
-    ];
-    for (const sel of closeSelectors) {
-      try {
-        const btn = page.locator(sel).last();
-        if (await btn.count() > 0 && await btn.isVisible().catch(() => false)) {
+/**
+ * 通用遮罩/弹窗（广告、签到、推广等）自动关闭。
+ *
+ * 策略（按优先级，多轮重试直到没有可见遮罩）：
+ *   1. 找到可见的弹窗容器（role=dialog / aria-modal / class 含 modal|overlay|mask|popup|advert|backdrop 等），
+ *      点击容器内的关闭按钮（aria-label 含“关闭/Close”、class 含 close、.semi-modal-close、“关闭”文本按钮）。
+ *   2. 按 Escape（多数弹窗支持）。
+ *   3. 点击遮罩（mask/backdrop 类、覆盖视口大部分的 fixed/absolute 元素）的左上角空白处——很多半遮罩点击空白即关闭。
+ * 每轮操作后重新验证；最多 maxPasses 轮。全部失败返回 false（调用方继续执行并记录诊断）。
+ */
+const OVERLAY_CONTAINER_SELECTOR = [
+  'div[role="dialog"]',
+  'div[aria-modal="true"]',
+  '.semi-modal',
+  '[class*="modal" i]',
+  '[class*="overlay" i]',
+  '[class*="mask" i]',
+  '[class*="popup" i]',
+  '[class*="advert" i]',
+  '[class*="backdrop" i]',
+].join(',');
+
+const OVERLAY_CLOSE_SELECTOR = [
+  'button[aria-label*="关闭"]',
+  '[role="button"][aria-label*="关闭"]',
+  'button[aria-label*="close" i]',
+  '[role="button"][aria-label*="close" i]',
+  '.semi-modal-close',
+  '[class*="close" i]',
+  'button:has-text("关闭")',
+  '[role="button"]:has-text("关闭")',
+].join(',');
+
+/** 页面上是否仍存在可见且面积足够大的遮罩/弹窗容器 */
+async function hasVisibleOverlay(page) {
+  return await page.evaluate((sel) => {
+    const vw = window.innerWidth || 1;
+    const vh = window.innerHeight || 1;
+    const els = Array.from(document.querySelectorAll(sel));
+    return els.some((el) => {
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width < 120 || r.height < 80) return false;
+      const coverage = (r.width * r.height) / (vw * vh);
+      const positioned = style.position === 'fixed' || style.position === 'absolute' || (Number(style.zIndex) || 0) >= 10;
+      // 全屏/大面积遮罩，或较大的固定定位弹窗
+      return positioned && coverage > 0.12;
+    });
+  }, OVERLAY_CONTAINER_SELECTOR).catch(() => false);
+}
+
+/** 尝试关闭所有可见遮罩/弹窗。返回成功关闭的弹窗数量。 */
+async function dismissPageOverlays(page, maxPasses = 4) {
+  let dismissed = 0;
+  for (let pass = 0; pass < maxPasses; pass++) {
+    if (!(await hasVisibleOverlay(page))) break;
+
+    // 1) 容器内的关闭按钮（从后往前的 DOM 顺序，通常后出现的在更上层）
+    const containers = page.locator(OVERLAY_CONTAINER_SELECTOR);
+    const count = await containers.count().catch(() => 0);
+    let closed = false;
+    for (let i = count - 1; i >= 0 && !closed; i--) {
+      const container = containers.nth(i);
+      if (!(await container.isVisible().catch(() => false))) continue;
+      const box = await container.boundingBox().catch(() => null);
+      if (!box || box.width < 120 || box.height < 80) continue;
+      const closeBtns = container.locator(OVERLAY_CLOSE_SELECTOR);
+      const btnCount = await closeBtns.count().catch(() => 0);
+      for (let j = btnCount - 1; j >= 0; j--) {
+        const btn = closeBtns.nth(j);
+        if (!(await btn.isVisible().catch(() => false))) continue;
+        try {
           await btn.click({ timeout: 2000 });
-          await page.waitForTimeout(800);
-          if (await promo.count() === 0) {
-            log('info', `推广弹窗已通过选择器关闭: ${sel}`);
-            return true;
+          await page.waitForTimeout(600);
+          if (!(await hasVisibleOverlay(page))) {
+            log('info', '遮罩/弹窗已通过关闭按钮关闭');
+            closed = true;
+            dismissed++;
+            break;
           }
-        }
-      } catch (_) { /* 继续下一个候选 */ }
+        } catch (_) { /* 尝试下一个候选 */ }
+      }
     }
-    log('warn', '推广弹窗未能关闭，继续执行（后续点击可能被遮挡）');
-    return false;
-  } catch {
-    return false;
+    if (closed) continue;
+
+    // 2) Escape
+    log('info', '检测到遮罩/弹窗，尝试 Escape 关闭');
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(500);
+    if (!(await hasVisibleOverlay(page))) {
+      log('info', '遮罩/弹窗已通过 Escape 关闭');
+      dismissed++;
+      continue;
+    }
+
+    // 3) 点击遮罩左上角空白处（避开弹窗本体）
+    const backdrops = page.locator('[class*="mask" i],[class*="backdrop" i],[class*="overlay" i]');
+    const bdCount = await backdrops.count().catch(() => 0);
+    let backdropClosed = false;
+    for (let i = bdCount - 1; i >= 0; i--) {
+      const bd = backdrops.nth(i);
+      if (!(await bd.isVisible().catch(() => false))) continue;
+      const box = await bd.boundingBox().catch(() => null);
+      if (!box || box.width < 200 || box.height < 200) continue;
+      try {
+        // 左上角 8px 处基本都是遮罩空白区域（弹窗通常居中）
+        await bd.click({ position: { x: 8, y: 8 }, timeout: 2000 });
+        await page.waitForTimeout(500);
+        if (!(await hasVisibleOverlay(page))) {
+          log('info', '遮罩/弹窗已通过点击遮罩关闭');
+          backdropClosed = true;
+          dismissed++;
+          break;
+        }
+      } catch (_) { /* 尝试下一个候选 */ }
+    }
+    if (backdropClosed) continue;
+
+    log('warn', '未能自动关闭遮罩/弹窗（可人工关闭后继续）');
+    break;
   }
+  return dismissed;
 }
 
 /** 轮询页面，识别登录成功后触发 login_detected 事件（不触碰 Cookie，仅看页面文本） */
@@ -180,6 +267,8 @@ async function openLogin(accountId, userDataDir) {
   await page.goto('https://www.doubao.com/chat/', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch((err) => {
     log('warn', `导航到豆包首页失败: ${err.message}`);
   });
+  await page.waitForTimeout(1500);
+  await dismissPageOverlays(page);
   // 后台轮询登录状态（最长约 15 分钟），识别成功后由 Rust 端更新账号状态
   watchLogin(accountId, page);
   return { ok: true, url: page.url() };
@@ -347,6 +436,124 @@ async function probeAndExtract(cmd) {
   };
 }
 
+/** 发送按钮候选选择器（按优先级） */
+const SUBMIT_CANDIDATES = [
+  'button[aria-label*="发送"]',
+  'div[aria-label*="发送"]',
+  '[data-testid="send_button"]',
+  '[data-testid*="send_button"]',
+  '[data-testid*="send"]',
+  'button[aria-label*="Send" i]',
+  'div[role="button"][aria-label*="发送"]',
+];
+
+/** 找到可见且可用的发送按钮；找不到返回 null（绝不盲点） */
+async function findSubmitButton(page) {
+  for (const sel of SUBMIT_CANDIDATES) {
+    try {
+      const el = page.locator(sel).last();
+      if (await el.count() > 0 && await el.isVisible().catch(() => false) && await el.isEnabled().catch(() => true)) {
+        return { el, sel };
+      }
+    } catch (_) { /* 继续尝试下一个候选 */ }
+  }
+  return null;
+}
+
+/** 统计页面上生成图片数量 */
+async function countGeneratedImages(page) {
+  return await page.locator('img[src*="tos-cn-i-a9rns2rl98"]').count().catch(() => 0);
+}
+
+/** 等待生成图片出现且数量稳定；返回最终数量（0 = 超时未出现） */
+async function waitForGeneration(page, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastCount = -1;
+  let stablePolls = 0;
+  log('info', `等待生图完成（最长 ${Math.round(timeoutMs / 1000)} 秒）…`);
+  while (Date.now() < deadline) {
+    const count = await page.locator('img[src*="tos-cn-i-a9rns2rl98"]').count().catch(() => 0);
+    if (count > 0 && count === lastCount) {
+      stablePolls += 1;
+      if (stablePolls >= 2) break;
+    } else {
+      stablePolls = 0;
+    }
+    lastCount = count;
+    await page.waitForTimeout(2000);
+  }
+  return lastCount <= 0 ? 0 : lastCount;
+}
+
+/** URL 是否为豆包对话详情页（/chat/<id>），说明已经提交过 */
+function isChatDetailUrl(url) {
+  return /\/chat\/[A-Za-z0-9_-]{8,}/.test(url || '');
+}
+
+/**
+ * 人工干预后继续执行：只检测页面、等待已提交的生成完成，绝不替用户点击发送。
+ *
+ * 返回：
+ *   { ok: true, state: 'already_generated', images_found }  — 页面已有生成图（或等待后出现），可直接提取
+ *   { ok: true, state: 'fresh' }                            — 页面是全新对话、什么都没提交，调用方可重新执行完整流程
+ *   { ok: false, reason: 'prompt_pending_submit', ... }     — 输入框有提示词但未发送：请用户在浏览器点发送后再点“继续执行”
+ *   { ok: false, reason: 'generation_timeout', ... }        — 已提交但超时未出图
+ *   { ok: false, reason: 'browser_not_started', ... }       — 浏览器/页面已关闭
+ */
+async function resumeGenerate(cmd) {
+  const accountId = cmd.account_id;
+  const ctx = contexts.get(accountId);
+  if (!ctx) {
+    return { ok: false, reason: 'browser_not_started', message: '浏览器未启动或页面已关闭，无法继续。请先在「账号管理」中打开登录页，或重新运行任务。' };
+  }
+  const page = await acquirePage(ctx);
+  if (page.isClosed()) {
+    return { ok: false, reason: 'browser_not_started', message: '页面已关闭，无法继续。请重新运行任务。' };
+  }
+
+  await dismissPageOverlays(page);
+
+  const url = page.url();
+  const existing = await countGeneratedImages(page);
+  if (existing > 0) {
+    log('info', `页面已有 ${existing} 张生成图片，跳过提交，直接提取`);
+    return { ok: true, state: 'already_generated', images_found: existing };
+  }
+
+  if (isChatDetailUrl(url)) {
+    // 已提交过：只等待生成完成，不再提交
+    const timeoutMs = cmd.generation_timeout_ms || 180000;
+    const lastCount = await waitForGeneration(page, timeoutMs);
+    if (lastCount > 0) {
+      return { ok: true, state: 'already_generated', images_found: lastCount };
+    }
+    return { ok: false, reason: 'generation_timeout', images_found: 0, message: '等待生图超时，页面未出现生成图片。' };
+  }
+
+  const onDoubao = /doubao\.com/.test(url);
+  if (onDoubao) {
+    const textboxState = await page.evaluate(() => {
+      const el = document.querySelector('textarea,[contenteditable="true"]');
+      if (!el) return 'missing';
+      const text = (el.innerText || el.value || '').trim();
+      return text.length > 0 ? 'filled' : 'empty';
+    }).catch(() => 'missing');
+    if (textboxState === 'filled') {
+      // 不盲目点击发送：请用户确认
+      return {
+        ok: false,
+        reason: 'prompt_pending_submit',
+        message: '检测到输入框里有未发送的提示词。为避免误提交，请在可见浏览器中确认后点击「发送」，然后再次点击「继续执行」。',
+      };
+    }
+    // 全新对话页且输入框为空：什么都没提交，可以重新执行完整流程
+    return { ok: true, state: 'fresh' };
+  }
+
+  // 页面不在豆包（about:blank / 网络错误页等）：视为未提交，可重新执行
+  return { ok: true, state: 'fresh' };
+}
+
 /**
  * 生成一张/组图片：打开新对话页 → 上传参考图 → 输入提示词 → 提交 → 等待生成完成。
  *
@@ -391,7 +598,7 @@ async function generateImages(cmd) {
     return { ok: false, reason: 'goto_failed', message: err.message };
   }
   await page.waitForTimeout(3000);
-  await dismissPromoModal(page);
+  await dismissPageOverlays(page);
 
   // 登录检查：页面若提示登录，交人工处理
   const pageText = await page.locator('body').innerText().catch(() => '');
@@ -456,53 +663,33 @@ async function generateImages(cmd) {
     return { ok: false, reason: 'prompt_insert_failed', message: err.message };
   }
   log('info', '提示词已输入');
-  await dismissPromoModal(page); // 上传后弹窗可能再次出现
+  await dismissPageOverlays(page); // 上传后弹窗可能再次出现
 
   // 5. 提交（只提交一次；找不到按钮即停止，不盲目点击）
-  const submitCandidates = [
-    'button[aria-label*="发送"]',
-    'div[aria-label*="发送"]',
-    '[data-testid="send_button"]',
-    '[data-testid*="send_button"]',
-    '[data-testid*="send"]',
-    'button[aria-label*="Send" i]',
-    'div[role="button"][aria-label*="发送"]',
-  ];
-  let clicked = false;
-  for (const sel of submitCandidates) {
-    try {
-      const el = page.locator(sel).last();
-      if (await el.count() > 0 && await el.isVisible().catch(() => false) && await el.isEnabled().catch(() => true)) {
-        await el.click();
-        clicked = true;
-        log('info', `已点击发送按钮: ${sel}`);
-        break;
-      }
-    } catch (_) { /* 继续尝试下一个候选 */ }
-  }
-  if (!clicked) {
+  const submitBtn = await findSubmitButton(page);
+  if (!submitBtn) {
     await saveDiag('submit_button_not_found');
     return { ok: false, reason: 'submit_button_not_found', message: '未找到发送按钮。页面结构可能已变化，请查看诊断截图。' };
   }
-
-  // 6. 等待生成完成：img[src*=tos-cn-i-a9rns2rl98] 出现且数量稳定
-  const timeoutMs = cmd.generation_timeout_ms || 180000;
-  const deadline = Date.now() + timeoutMs;
-  let lastCount = -1;
-  let stablePolls = 0;
-  log('info', `等待生图完成（最长 ${Math.round(timeoutMs / 1000)} 秒）…`);
-  while (Date.now() < deadline) {
-    const count = await page.locator('img[src*="tos-cn-i-a9rns2rl98"]').count().catch(() => 0);
-    if (count > 0 && count === lastCount) {
-      stablePolls += 1;
-      if (stablePolls >= 2) break;
-    } else {
-      stablePolls = 0;
+  try {
+    await submitBtn.el.click({ timeout: 5000 });
+    log('info', `已点击发送按钮: ${submitBtn.sel}`);
+  } catch (err) {
+    // 点击可能被再次弹出的广告遮罩拦截：尝试关闭后重试一次
+    log('warn', `点击发送按钮失败（${err.message}），尝试关闭遮罩后重试…`);
+    await dismissPageOverlays(page);
+    try {
+      await submitBtn.el.click({ timeout: 5000 });
+      log('info', `已点击发送按钮（重试）: ${submitBtn.sel}`);
+    } catch (err2) {
+      await saveDiag('submit_click_failed');
+      return { ok: false, reason: 'submit_click_failed', message: `点击发送按钮失败: ${err2.message}` };
     }
-    lastCount = count;
-    await page.waitForTimeout(2000);
   }
 
+  // 6. 等待生成完成：img[src*=tos-cn-i-a9rns2rl98] 出现且数量稳定
+  const genTimeoutMs = cmd.generation_timeout_ms || 180000;
+  const lastCount = await waitForGeneration(page, genTimeoutMs);
   if (lastCount <= 0) {
     await saveDiag('generation_timeout');
     return { ok: false, reason: 'generation_timeout', images_found: 0, message: '等待生图超时，页面未出现生成图片。' };
@@ -568,6 +755,8 @@ async function handleCommand(cmd) {
       return await scanAndSelect(cmd);
     case 'generate_images':
       return await generateImages(cmd);
+    case 'resume_generate':
+      return await resumeGenerate(cmd);
     case 'extract_images':
       return await probeAndExtract(cmd);
     case 'download_images':
@@ -617,4 +806,4 @@ function main() {
 
 main();
 
-module.exports = { scanAndSelect, probeAndExtract, generateImages, downloadImages, startBrowser, stopBrowser, openLogin };
+module.exports = { scanAndSelect, probeAndExtract, generateImages, resumeGenerate, downloadImages, startBrowser, stopBrowser, openLogin };

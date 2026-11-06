@@ -41,8 +41,8 @@ pub struct TaskUpdateRoundPayload {
 }
 
 /** 确保 sidecar 已启动（供登录等非任务型命令使用） */
-fn manager_ensure_sidecar(app: &AppHandle, scheduler: &Scheduler) -> Result<(), String> {
-    scheduler.start_sidecar(app)
+async fn manager_ensure_sidecar(app: &AppHandle, scheduler: &Scheduler) -> Result<(), String> {
+    scheduler.start_sidecar(app).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -273,10 +273,36 @@ pub async fn task_pause(id: i64) -> Result<(), String> {
 pub async fn task_resume(id: i64) -> Result<(), String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE tasks SET status = 'preparing', updated_at = ?1 WHERE id = ?2",
+        "UPDATE tasks SET status = 'pending', updated_at = ?1 WHERE id = ?2 AND status = 'paused'",
         rusqlite::params![Utc::now().to_rfc3339(), id],
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/**
+ * 人工干预后继续执行：检查豆包页面状态后接着完成（不盲目重新提交）。
+ * 允许 needs_manual_intervention / failed / paused 状态的任务调用。
+ */
+#[tauri::command(rename_all = "snake_case")]
+pub async fn task_continue(
+    app: AppHandle,
+    scheduler: State<'_, Arc<Scheduler>>,
+    id: i64,
+) -> Result<(), String> {
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let status: String = conn
+        .query_row("SELECT status FROM tasks WHERE id = ?1", [id], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if status != "needs_manual_intervention" && status != "failed" && status != "paused" {
+        return Err(format!("当前状态（{}）不支持继续执行", status));
+    }
+    drop(conn);
+
+    let scheduler_inner = scheduler.inner().clone();
+    tokio::spawn(async move {
+        task_scheduler::resume_task(app, scheduler_inner, id).await;
+    });
     Ok(())
 }
 
@@ -531,7 +557,7 @@ pub async fn account_open_login(
 ) -> Result<(), String> {
     let account = account_get(id).await?.ok_or("账号不存在")?;
     let user_data_dir = account.user_data_dir.clone();
-    manager_ensure_sidecar(&app, &scheduler)?;
+    manager_ensure_sidecar(&app, &scheduler).await?;
     let cmd = serde_json::json!({
         "cmd": "open_login",
         "account_id": id,

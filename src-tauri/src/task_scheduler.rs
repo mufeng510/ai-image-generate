@@ -105,8 +105,8 @@ pub struct Scheduler {
     sidecar_stdin: Mutex<Option<ChildStdin>>,
     /** Sidecar 事件发送通道（stdout 读取线程 -> 调度器） */
     sidecar_event_tx: Mutex<Option<mpsc::UnboundedSender<serde_json::Value>>>,
-    /** Sidecar 事件接收通道（供 execute_task 接收提取/下载结果） */
-    sidecar_event_rx: Mutex<Option<mpsc::UnboundedReceiver<serde_json::Value>>>,
+    /** Sidecar 事件接收通道（供执行任务接收提取/下载结果；异步锁，整个任务期间持有） */
+    sidecar_event_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<serde_json::Value>>>,
     /** 调度器运行标志 */
     running: Mutex<bool>,
 }
@@ -117,22 +117,23 @@ impl Scheduler {
             current_task: Mutex::new(None),
             sidecar_stdin: Mutex::new(None),
             sidecar_event_tx: Mutex::new(None),
-            sidecar_event_rx: Mutex::new(None),
+            sidecar_event_rx: tokio::sync::Mutex::new(None),
             running: Mutex::new(false),
         }
     }
 
     /** 启动 Sidecar 进程（Node.js + Playwright Chromium） */
-    pub fn start_sidecar(&self, app: &AppHandle) -> Result<(), String> {
-        let mut stdin_guard = self.sidecar_stdin.lock().map_err(|e| e.to_string())?;
-        if stdin_guard.is_some() {
-            return Ok(()); // 已启动
-        }
-
+    pub async fn start_sidecar(&self, app: &AppHandle) -> Result<(), String> {
         let index_js = resolve_sidecar_index(app)?;
 
-        let node_exe = which_node()?;
-        let mut child = Command::new(node_exe)
+        let mut child = {
+            let mut stdin_guard = self.sidecar_stdin.lock().map_err(|e| e.to_string())?;
+            if stdin_guard.is_some() {
+                return Ok(()); // 已启动
+            }
+
+            let node_exe = which_node()?;
+            let mut child = Command::new(node_exe)
             .arg(&index_js)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -140,17 +141,19 @@ impl Scheduler {
             .spawn()
             .map_err(|e| format!("启动 sidecar 失败: {} (入口: {})", e, index_js.display()))?;
 
-        let stdin = child.stdin.take().ok_or("无法获取 sidecar stdin")?;
-        *stdin_guard = Some(stdin);
+            let stdin = child.stdin.take().ok_or("无法获取 sidecar stdin")?;
+            *stdin_guard = Some(stdin);
+            child
+        };
 
-        // 创建 sidecar 事件通道，供 execute_task 接收提取/下载结果
+        // 创建 sidecar 事件通道，供执行任务接收提取/下载结果
         let (event_tx, event_rx) = mpsc::unbounded_channel::<serde_json::Value>();
         {
             let mut tx_guard = self.sidecar_event_tx.lock().map_err(|e| e.to_string())?;
             *tx_guard = Some(event_tx.clone());
         }
         {
-            let mut rx_guard = self.sidecar_event_rx.lock().map_err(|e| e.to_string())?;
+            let mut rx_guard = self.sidecar_event_rx.lock().await;
             *rx_guard = Some(event_rx);
         }
 
@@ -487,12 +490,96 @@ fn read_prompt(project_root: &std::path::Path, prompt_path: Option<&str>) -> Str
     String::new()
 }
 
+/** 更新任务状态 + 写日志 + 广播事件 */
+fn set_task_status(app: &AppHandle, tid: i64, status: &str, msg: &str) {
+    match get_connection() {
+        Ok(conn) => {
+            if let Err(e) = db_update_task_status(&conn, tid, status) {
+                eprintln!("[调度器] 更新任务状态失败 ({}): {}", status, e);
+            }
+            let _ = db_write_log(&conn, Some(tid), "info", msg);
+        }
+        Err(e) => eprintln!("[调度器] 打开数据库失败（状态未写入 {}）: {}", status, e),
+    }
+    let _ = app.emit("task-status-changed", serde_json::json!({
+        "task_id": tid,
+        "status": status,
+    }));
+}
+
+/** 任务上下文（项目根目录、账号、提示词路径） */
+struct TaskContext {
+    project_root: std::path::PathBuf,
+    account_id: i64,
+    user_data_dir: String,
+    prompt_path: Option<String>,
+}
+
+/** 读取任务上下文：项目根目录、账号 id、账号 user_data_dir、提示词路径 */
+fn load_task_context(tid: i64) -> Result<TaskContext, String> {
+    let conn = get_connection()?;
+    let ctx: Result<(String, Option<i64>, String, Option<String>), rusqlite::Error> = conn.query_row(
+        "SELECT p.root_path, t.account_id, COALESCE(a.user_data_dir, ''), p.prompt_path
+         FROM tasks t
+         JOIN projects p ON t.project_id = p.id
+         LEFT JOIN accounts a ON t.account_id = a.id
+         WHERE t.id = ?1",
+        [tid],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    );
+    let (project_root, account_id, user_data_dir, prompt_path) = ctx.map_err(|e| e.to_string())?;
+    let account_id = account_id.ok_or("任务未绑定账号")?;
+    Ok(TaskContext {
+        project_root: std::path::PathBuf::from(&project_root),
+        account_id,
+        user_data_dir,
+        prompt_path,
+    })
+}
+
+/** 读取任务本身 */
+fn load_task_by_id(tid: i64) -> Result<Task, String> {
+    let conn = get_connection()?;
+    let mut stmt = conn
+        .prepare("SELECT id, name, project_id, account_id, status, current_round, total_rounds, created_at, updated_at, started_at, completed_at FROM tasks WHERE id = ?1")
+        .map_err(|e| e.to_string())?;
+    stmt.query_row([tid], |row| {
+        Ok(Task {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            project_id: row.get(2)?,
+            account_id: row.get(3)?,
+            status: row.get(4)?,
+            current_round: row.get(5)?,
+            total_rounds: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+            started_at: row.get(9)?,
+            completed_at: row.get(10)?,
+        })
+    })
+    .map_err(|e| e.to_string())
+}
+
+/** 读取任务最新一轮（id, round_number）；无轮次返回 None */
+fn load_latest_round(tid: i64) -> Result<Option<(i64, i64)>, String> {
+    let conn = get_connection()?;
+    let mut stmt = conn
+        .prepare("SELECT id, round_number FROM task_rounds WHERE task_id = ?1 ORDER BY round_number DESC LIMIT 1")
+        .map_err(|e| e.to_string())?;
+    match stmt.query_row([tid], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))) {
+        Ok(v) => Ok(Some(v)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /** 依据失败原因决定任务状态与提示 */
 fn classify_gen_failure(reason: &str) -> (&'static str, &'static str) {
     match reason {
         "login_required" => ("needs_manual_intervention", "登录失效，请在可见浏览器中手动登录后继续"),
-        "upload_input_not_found" | "submit_button_not_found" | "textbox_not_found" => {
-            ("needs_manual_intervention", "未找到页面关键元素，网页结构可能已变化，请查看诊断截图")
+        "upload_input_not_found" | "submit_button_not_found" | "textbox_not_found" | "submit_click_failed" => {
+            ("needs_manual_intervention", "未找到页面关键元素或点击被遮挡，请关闭页面中的遮罩后继续")
         }
         "goto_failed" | "generation_timeout" => ("failed", "网络或生成超时"),
         "no_reference_images" | "empty_prompt" => ("failed", "缺少参考图片或提示词"),
@@ -504,95 +591,43 @@ fn classify_gen_failure(reason: &str) -> (&'static str, &'static str) {
 async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
     let tid = task.id.expect("task id");
 
-    // 辅助：更新状态 + 写日志 + 广播事件
-    let set_status = |app: &AppHandle, status: &str, msg: &str| {
-        match get_connection() {
-            Ok(conn) => {
-                if let Err(e) = db_update_task_status(&conn, tid, status) {
-                    eprintln!("[调度器] 更新任务状态失败 ({}): {}", status, e);
-                }
-                let _ = db_write_log(&conn, Some(tid), "info", msg);
-            }
-            Err(e) => eprintln!("[调度器] 打开数据库失败（状态未写入 {}）: {}", status, e),
-        }
-        let _ = app.emit("task-status-changed", serde_json::json!({
-            "task_id": tid,
-            "status": status,
-        }));
-    };
-
     // 1. preparing：启动 sidecar
-    set_status(&app, "preparing", "任务准备中");
-    if let Err(e) = scheduler.start_sidecar(&app) {
-        set_status(&app, "failed", &format!("启动自动化侧车失败: {}", e));
+    set_task_status(&app, tid, "preparing", "任务准备中");
+    if let Err(e) = scheduler.start_sidecar(&app).await {
+        set_task_status(&app, tid, "failed", &format!("启动自动化侧车失败: {}", e));
         scheduler.release();
         return;
     }
 
-    // 取出 sidecar 事件接收器（整个任务期间持有）
-    let mut event_rx: mpsc::UnboundedReceiver<serde_json::Value> = {
-        let mut guard = match scheduler.sidecar_event_rx.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                set_status(&app, "failed", "sidecar 事件通道锁定失败");
-                scheduler.release();
-                return;
-            }
-        };
-        match guard.take() {
-            Some(rx) => rx,
-            None => {
-                set_status(&app, "failed", "sidecar 事件通道未初始化");
-                scheduler.release();
-                return;
-            }
-        }
-    };
-
-    // 读取任务上下文：项目根目录、账号 id、账号 user_data_dir、提示词
-    let (project_root, account_id, user_data_dir, prompt_path) = {
-        let conn = match get_connection() {
-            Ok(c) => c,
-            Err(e) => {
-                set_status(&app, "failed", &format!("打开数据库失败: {}", e));
-                scheduler.release();
-                return;
-            }
-        };
-        let ctx: Result<(String, Option<i64>, String, Option<String>), rusqlite::Error> = conn.query_row(
-            "SELECT p.root_path, t.account_id, COALESCE(a.user_data_dir, ''), p.prompt_path
-             FROM tasks t
-             JOIN projects p ON t.project_id = p.id
-             LEFT JOIN accounts a ON t.account_id = a.id
-             WHERE t.id = ?1",
-            [tid],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        );
-        match ctx {
-            Ok(c) => c,
-            Err(e) => {
-                set_status(&app, "failed", &format!("读取任务上下文失败: {}", e));
-                scheduler.release();
-                return;
-            }
-        }
-    };
-
-    let account_id = match account_id {
-        Some(a) => a,
+    // 锁定 sidecar 事件接收器（整个任务期间持有；任务串行执行，无竞争）
+    let mut rx_guard = scheduler.sidecar_event_rx.lock().await;
+    let event_rx = match rx_guard.as_mut() {
+        Some(rx) => rx,
         None => {
-            set_status(&app, "failed", "任务未绑定账号");
+            set_task_status(&app, tid, "failed", "sidecar 事件通道未初始化");
             scheduler.release();
             return;
         }
     };
 
-    let project_root = std::path::PathBuf::from(&project_root);
+    // 读取任务上下文：项目根目录、账号 id、账号 user_data_dir、提示词
+    let ctx = match load_task_context(tid) {
+        Ok(c) => c,
+        Err(e) => {
+            set_task_status(&app, tid, "failed", &format!("读取任务上下文失败: {}", e));
+            scheduler.release();
+            return;
+        }
+    };
+    let account_id = ctx.account_id;
+    let user_data_dir = ctx.user_data_dir.clone();
+    let project_root = ctx.project_root.clone();
+    let prompt_path = ctx.prompt_path.clone();
     let prompt = read_prompt(&project_root, prompt_path.as_deref());
     let round_number = task.current_round.unwrap_or(0) + 1;
 
     // 2. 启动可见浏览器（每账号独立 userDataDir）
-    set_status(&app, "preparing", "启动可见浏览器…");
+    set_task_status(&app, tid, "preparing", "启动可见浏览器…");
     eprintln!("[调度器] 任务 {} 启动可见浏览器…", tid);
     eprintln!("[调度器] 发送 start_browser 命令 (account_id={})…", account_id);
     let start_cmd = serde_json::json!({
@@ -601,16 +636,16 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
         "user_data_dir": user_data_dir,
     });
     if let Err(e) = scheduler.send_sidecar_cmd(start_cmd) {
-        set_status(&app, "failed", &format!("发送启动浏览器命令失败: {}", e));
+        set_task_status(&app, tid, "failed", &format!("发送启动浏览器命令失败: {}", e));
         scheduler.release();
         return;
     }
     eprintln!("[调度器] 等待 start_browser 响应 (最长 90 秒)…");
-    let res = wait_result(&mut event_rx, "start_browser", 90).await;
+    let res = wait_result(event_rx, "start_browser", 90).await;
     eprintln!("[调度器] start_browser 响应: {:?}", res);
 
     // 3. selecting_images：扫描参考图 + 文件夹独立抽取 5 张
-    set_status(&app, "selecting_images", "扫描参考图片并抽取本轮图片");
+    set_task_status(&app, tid, "selecting_images", "扫描参考图片并抽取本轮图片");
     eprintln!("[调度器] 发送 scan_images 命令…");
     let state_dir = crate::task_scheduler::app_data_dir()
         .map(|d| d.join("pool").join(format!("project_{}", task.project_id.unwrap_or(0))))
@@ -626,23 +661,23 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
         "count": 5,
     });
     if let Err(e) = scheduler.send_sidecar_cmd(scan_cmd) {
-        set_status(&app, "failed", &format!("发送扫描命令失败: {}", e));
+        set_task_status(&app, tid, "failed", &format!("发送扫描命令失败: {}", e));
         scheduler.release();
         return;
     }
-    let scan_res = wait_result(&mut event_rx, "scan_images", 120).await;
+    let scan_res = wait_result(event_rx, "scan_images", 120).await;
     eprintln!("[调度器] scan_images 响应: {:?}", scan_res);
     let scan_ok = scan_res.as_ref().and_then(|v| v.get("ok")).and_then(|v| v.as_bool()).unwrap_or(false);
     if !scan_ok {
         let reason = scan_res.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str()).unwrap_or("unknown");
-        set_status(&app, "failed", &format!("参考图片抽取失败: {}", reason));
+        set_task_status(&app, tid, "failed", &format!("参考图片抽取失败: {}", reason));
         scheduler.release();
         return;
     }
     let selected: Vec<serde_json::Value> = scan_res.as_ref()
         .and_then(|v| v.get("selected")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
     if selected.is_empty() {
-        set_status(&app, "failed", "本轮未抽取到任何参考图片");
+        set_task_status(&app, tid, "failed", "本轮未抽取到任何参考图片");
         scheduler.release();
         return;
     }
@@ -671,7 +706,7 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
         let conn = match get_connection() {
             Ok(c) => c,
             Err(e) => {
-                set_status(&app, "failed", &format!("打开数据库失败: {}", e));
+                set_task_status(&app, tid, "failed", &format!("打开数据库失败: {}", e));
                 scheduler.release();
                 return;
             }
@@ -685,7 +720,7 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
     };
 
     // 4. uploading/submitting/generating：通过 sidecar 上传、提交、等待生成
-    set_status(&app, "uploading", "上传参考图片并提交生图");
+    set_task_status(&app, tid, "uploading", "上传参考图片并提交生图");
     let refs_paths: Vec<String> = selected.iter()
         .filter_map(|v| v.get("path").and_then(|s| s.as_str()).map(|s| s.to_string()))
         .collect();
@@ -698,12 +733,12 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
         "prompt": prompt,
     });
     if let Err(e) = scheduler.send_sidecar_cmd(gen_cmd) {
-        set_status(&app, "failed", &format!("发送生图命令失败: {}", e));
+        set_task_status(&app, tid, "failed", &format!("发送生图命令失败: {}", e));
         scheduler.release();
         return;
     }
-    set_status(&app, "submitting", "已提交，等待生成完成");
-    let gen_res = wait_result(&mut event_rx, "generate_images", 300).await;
+    set_task_status(&app, tid, "submitting", "已提交，等待生成完成");
+    let gen_res = wait_result(event_rx, "generate_images", 300).await;
     let gen_ok = gen_res.as_ref().and_then(|v| v.get("ok")).and_then(|v| v.as_bool()).unwrap_or(false);
     if !gen_ok {
         let reason = gen_res.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -716,13 +751,33 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
             );
             let _ = db_write_log(&conn, Some(tid), "error", &format!("生图未完成（{}）: {} {}", reason, msg, log));
         }
-        set_status(&app, status, &format!("生图未完成（{}）: {} {}", reason, msg, log));
+        set_task_status(&app, tid, status, &format!("生图未完成（{}）: {} {}", reason, msg, log));
         scheduler.release();
         return;
     }
 
+    finish_after_generation(&app, &scheduler, event_rx, tid, account_id, round_number, &project_root, round_id).await;
+    scheduler.release();
+}
+
+/**
+ * 生成完成后的收尾流程：提取 → 下载 → 校验 → 完成/失败。
+ * 完整流程（execute_task）与人工干预后的继续流程（resume_task）共用，
+ * 调用方负责领取/释放调度器执行权，本函数不释放。
+ */
+#[allow(clippy::too_many_arguments)]
+async fn finish_after_generation(
+    app: &AppHandle,
+    scheduler: &Scheduler,
+    event_rx: &mut mpsc::UnboundedReceiver<serde_json::Value>,
+    tid: i64,
+    account_id: i64,
+    round_number: i64,
+    project_root: &std::path::Path,
+    round_id: i64,
+) {
     // 5. generating → 提取：DOM 扫描生成图片 URL
-    set_status(&app, "generating", "生成完成，提取图片 URL");
+    set_task_status(app, tid, "generating", "生成完成，提取图片 URL");
     let extract_cmd = serde_json::json!({
         "cmd": "extract_images",
         "task_id": tid,
@@ -730,11 +785,10 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
         "project_root": project_root.to_string_lossy(),
     });
     if let Err(e) = scheduler.send_sidecar_cmd(extract_cmd) {
-        set_status(&app, "failed", &format!("发送提取命令失败: {}", e));
-        scheduler.release();
+        set_task_status(&app, tid, "failed", &format!("发送提取命令失败: {}", e));
         return;
     }
-    let extract_res = wait_result(&mut event_rx, "extract_images", 180).await;
+    let extract_res = wait_result(event_rx, "extract_images", 180).await;
     let extract_ok = extract_res.as_ref().and_then(|v| v.get("ok")).and_then(|v| v.as_bool()).unwrap_or(false);
     let raw_images: Vec<serde_json::Value> = extract_res.as_ref()
         .and_then(|v| v.get("images")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
@@ -746,13 +800,12 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
                 rusqlite::params![reason, Utc::now().to_rfc3339(), round_id],
             );
         }
-        set_status(&app, "needs_manual_intervention", &format!("未提取到生成图片（{}），请查看诊断信息", reason));
-        scheduler.release();
+        set_task_status(&app, tid, "needs_manual_intervention", &format!("未提取到生成图片（{}），请查看诊断信息", reason));
         return;
     }
 
     // 6. downloading：下载到 output/round_<n>
-    set_status(&app, "downloading", "下载生成图片");
+    set_task_status(&app, tid, "downloading", "下载生成图片");
     let round_dir = project_root.join("output").join(format!("round_{}", round_number));
     let download_items: Vec<serde_json::Value> = raw_images.iter().enumerate().map(|(idx, img)| {
         serde_json::json!({
@@ -769,11 +822,10 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
         "images": download_items,
     });
     if let Err(e) = scheduler.send_sidecar_cmd(download_cmd) {
-        set_status(&app, "failed", &format!("发送下载命令失败: {}", e));
-        scheduler.release();
+        set_task_status(&app, tid, "failed", &format!("发送下载命令失败: {}", e));
         return;
     }
-    let dl_res = wait_result(&mut event_rx, "download_images", 300).await;
+    let dl_res = wait_result(event_rx, "download_images", 300).await;
     let download_results: Vec<serde_json::Value> = dl_res.as_ref()
         .and_then(|v| v.get("results")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
@@ -783,8 +835,7 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
         let conn = match get_connection() {
             Ok(c) => c,
             Err(e) => {
-                set_status(&app, "failed", &format!("打开数据库失败: {}", e));
-                scheduler.release();
+                set_task_status(&app, tid, "failed", &format!("打开数据库失败: {}", e));
                 return;
             }
         };
@@ -831,7 +882,7 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
             );
             let _ = db_write_log(&conn, Some(tid), "info", &format!("任务完成：本轮成功下载 {} 张图片", success_count));
         }
-        set_status(&app, "completed", "任务完成");
+        set_task_status(&app, tid, "completed", "任务完成");
         let _ = app.emit("task-completed", serde_json::json!({ "task_id": tid }));
     } else {
         if let Ok(conn) = get_connection() {
@@ -841,10 +892,104 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
             );
             let _ = db_write_log(&conn, Some(tid), "error", "任务失败：本轮未成功下载任何图片");
         }
-        set_status(&app, "failed", "任务失败：未成功下载任何图片");
+        set_task_status(&app, tid, "failed", "任务失败：未成功下载任何图片");
+    }
+}
+
+/**
+ * 人工干预后继续执行（「继续执行」按钮触发）。
+ *
+ * 原则（task.md 铁律）：绝不盲目重新提交。
+ *   - 最新一轮从未提交（无轮次）→ 完整重新执行（安全：没有提交发生）；
+ *   - 页面已有生成图 / 已提交正在生成 → 只等待完成，然后进入 提取→下载→校验；
+ *   - 输入框有提示词但未发送 → 提示用户在浏览器点「发送」后再次点击「继续执行」；
+ *   - 其他情况 → 停在 needs_manual_intervention 并说明原因。
+ */
+pub async fn resume_task(app: AppHandle, scheduler: Arc<Scheduler>, task_id: i64) {
+    if !scheduler.try_acquire(task_id) {
+        // 不覆盖正在执行任务的状态，仅记日志
+        if let Ok(conn) = get_connection() {
+            let _ = db_write_log(&conn, Some(task_id), "warn", "已有任务正在执行，忽略本次「继续执行」");
+        }
+        return;
+    }
+    if let Err(e) = resume_task_inner(&app, &scheduler, task_id).await {
+        set_task_status(&app, task_id, "needs_manual_intervention", &format!("继续执行失败：{}", e));
+    }
+    scheduler.release();
+}
+
+async fn resume_task_inner(app: &AppHandle, scheduler: &Arc<Scheduler>, tid: i64) -> Result<(), String> {
+    let task = load_task_by_id(tid)?;
+
+    // 从未提交过：完整重新执行（不存在重复提交问题）
+    let latest = load_latest_round(tid)?;
+    if latest.is_none() {
+        if let Ok(conn) = get_connection() {
+            let _ = db_write_log(&conn, Some(tid), "info", "未找到已提交轮次，按完整流程重新执行");
+        }
+        execute_task(app.clone(), scheduler.clone(), task).await;
+        return Ok(());
+    }
+    let (round_id, round_number) = latest.unwrap();
+
+    // 启动/复用 sidecar
+    scheduler.start_sidecar(app).await?;
+
+    let mut rx_guard = scheduler.sidecar_event_rx.lock().await;
+    let event_rx = rx_guard.as_mut().ok_or("sidecar 事件通道未初始化")?;
+
+    let ctx = load_task_context(tid)?;
+    let account_id = ctx.account_id;
+    let project_root = ctx.project_root.clone();
+
+    set_task_status(app, tid, "generating", "继续执行：先检查页面状态");
+
+    let resume_cmd = serde_json::json!({
+        "cmd": "resume_generate",
+        "account_id": account_id,
+        "generation_timeout_ms": 180000,
+    });
+    scheduler.send_sidecar_cmd(resume_cmd)?;
+
+    // resume_generate 最长等一个生图周期（180s）+ 余量
+    let res = wait_result(event_rx, "resume_generate", 240).await;
+    let ok = res.as_ref().and_then(|v| v.get("ok")).and_then(|v| v.as_bool()).unwrap_or(false);
+    let state = res.as_ref().and_then(|v| v.get("state")).and_then(|v| v.as_str()).unwrap_or("");
+
+    if ok && state == "fresh" {
+        // 页面全新、什么都没提交：释放事件锁，转完整流程重新执行
+        drop(rx_guard);
+        if let Ok(conn) = get_connection() {
+            let _ = db_write_log(&conn, Some(tid), "info", "页面为全新对话，未提交任何内容，转完整流程重新执行");
+        }
+        execute_task(app.clone(), scheduler.clone(), task).await;
+        return Ok(());
     }
 
-    scheduler.release();
+    if !ok {
+        let reason = res.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str()).unwrap_or("unknown");
+        let msg = res.as_ref().and_then(|v| v.get("message")).and_then(|v| v.as_str()).unwrap_or("");
+        let tip = match reason {
+            "prompt_pending_submit" => msg, // sidecar 已给出指引：请在浏览器点发送后再点继续执行
+            "browser_not_started" => "浏览器未启动或页面已关闭，无法继续",
+            "generation_timeout" => "等待生图超时，页面未出现生成图片",
+            _ => "无法自动继续，请查看诊断信息或人工处理",
+        };
+        let tip = if tip.is_empty() { msg.to_string() } else { tip.to_string() };
+        if let Ok(conn) = get_connection() {
+            let _ = conn.execute(
+                "UPDATE task_rounds SET failure_reason = ?1 WHERE id = ?2",
+                rusqlite::params![format!("{}: {}", reason, tip), round_id],
+            );
+        }
+        set_task_status(app, tid, "needs_manual_intervention", &format!("继续执行未完成（{}）：{}", reason, tip));
+        return Ok(());
+    }
+
+    // 页面已有生成图（或等待后出现）：提取 → 下载 → 校验 → 完成
+    finish_after_generation(app, scheduler, event_rx, tid, account_id, round_number, &project_root, round_id).await;
+    Ok(())
 }
 
 /** 供外部调用：触发任务开始（从 commands.rs 调用） */

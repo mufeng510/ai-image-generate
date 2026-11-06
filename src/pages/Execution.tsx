@@ -13,6 +13,7 @@ import {
   taskStart,
   taskPause,
   taskResume,
+  taskContinue,
   taskCancel,
   projectList,
   accountList,
@@ -272,6 +273,14 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
                       {t('btn.pause')}
                     </button>
                   )}
+                  {['needs_manual_intervention', 'failed'].includes(task.status) && (
+                    <button
+                      onClick={() => handleAction(task.id!, taskContinue)}
+                      style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}
+                    >
+                      {t('btn.continueExecution')}
+                    </button>
+                  )}
                   {task.status === 'paused' && (
                     <button
                       onClick={() => handleAction(task.id!, taskResume)}
@@ -280,7 +289,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
                       {t('btn.continue')}
                     </button>
                   )}
-                  {['pending', 'preparing', 'paused'].includes(task.status) && (
+                  {['pending', 'preparing', 'paused', 'failed', 'needs_manual_intervention'].includes(task.status) && (
                     <button
                       onClick={() => handleAction(task.id!, taskCancel)}
                       style={{ background: '#dc2626', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}

@@ -33,6 +33,7 @@ fn main() {
             commands::task_start,
             commands::task_pause,
             commands::task_resume,
+            commands::task_continue,
             commands::task_cancel,
             commands::task_detail,
             commands::task_list_rounds,

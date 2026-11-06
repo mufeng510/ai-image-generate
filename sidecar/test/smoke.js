@@ -100,6 +100,12 @@ function run() {
     const raws3 = parseImageOriRaws(html3);
     check(raws3.length === 1 && raws3[0].url.includes('.png?'), '同图优先 .png 变体');
 
+    // 3c. resume_generate（未启动浏览器）：返回结构化错误，不崩溃、不盲目提交
+    send({ cmd: 'resume_generate', account_id: 99 });
+    const resume = await waitResult('resume_generate', 15000);
+    check(!!resume, 'resume_generate 返回结果');
+    check(resume && resume.ok === false && resume.reason === 'browser_not_started', 'resume_generate 无浏览器时结构化失败');
+
     // 4. extract_images（未启动浏览器）
     send({ cmd: 'extract_images', task_id: 1, account_id: 99, project_root: workDir });
     const ext = await waitResult('extract_images', 15000);

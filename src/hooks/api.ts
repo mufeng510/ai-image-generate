@@ -143,6 +143,10 @@ export async function taskResume(id: number): Promise<void> {
   return invoke('task_resume', { id })
 }
 
+export async function taskContinue(id: number): Promise<void> {
+  return invoke('task_continue', { id })
+}
+
 export async function taskCancel(id: number): Promise<void> {
   return invoke('task_cancel', { id })
 }
