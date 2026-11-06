@@ -25,6 +25,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../sidecar/src": "sidecar/src",
+      "../sidecar/package.json": "sidecar/package.json",
+      "../sidecar/node_modules": "sidecar/node_modules"
+    },
     "icon": [
       "icons/icon.ico",
       "icons/icon-256.png",

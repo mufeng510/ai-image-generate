@@ -133,13 +133,23 @@ impl Scheduler {
             }
 
             let node_exe = which_node()?;
-            let mut child = Command::new(node_exe)
+            let mut child = Command::new(&node_exe)
             .arg(&index_js)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("启动 sidecar 失败: {} (入口: {})", e, index_js.display()))?;
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    format!(
+                        "未找到 Node.js 运行时（sidecar 需要 Node.js >= 20）。请安装 Node.js，或设置 NODE_EXE 环境变量指向 node.exe 的完整路径。（尝试启动: {}，入口: {}）",
+                        node_exe,
+                        index_js.display()
+                    )
+                } else {
+                    format!("启动 sidecar 失败: {} (入口: {})", e, index_js.display())
+                }
+            })?;
 
             let stdin = child.stdin.take().ok_or("无法获取 sidecar stdin")?;
             *stdin_guard = Some(stdin);
@@ -301,15 +311,35 @@ fn which_node() -> Result<String, String> {
  *
  * 优先级：
  *   1. 环境变量 SIDECAR_INDEX（显式指定）；
- *   2. 开发环境：CARGO_MANIFEST_DIR/../sidecar/src/index.js（源码树，便于本机测试）；
- *   3. 打包环境：本地数据目录 DoubaoBatchImage/sidecar/src/index.js（由安装程序或构建脚本放置）。
+ *   2. 打包环境：安装目录下的 bundle 资源 sidecar/src/index.js（随安装包部署）；
+ *   3. 开发环境：CARGO_MANIFEST_DIR/../sidecar/src/index.js（源码树，便于本机测试）；
+ *   4. 旧部署约定：本地数据目录 DoubaoBatchImage/sidecar/src/index.js（兼容早期安装方式）。
+ *
+ * 全部尝试失败时，错误信息中列出所有已尝试的路径，便于用户排查。
  */
-fn resolve_sidecar_index(_app: &AppHandle) -> Result<std::path::PathBuf, String> {
+fn resolve_sidecar_index(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let mut tried: Vec<String> = Vec::new();
+
     if let Ok(p) = std::env::var("SIDECAR_INDEX") {
-        let path = std::path::PathBuf::from(p);
+        let path = std::path::PathBuf::from(&p);
         if path.exists() {
             return Ok(path);
         }
+        tried.push(format!("SIDECAR_INDEX={}（该路径不存在）", p));
+    }
+
+    // 打包环境：安装目录下的 bundle 资源
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let packaged = resource_dir
+            .join("sidecar")
+            .join("src")
+            .join("index.js");
+        if packaged.exists() {
+            return Ok(packaged);
+        }
+        tried.push(packaged.display().to_string());
+    } else {
+        tried.push("（无法获取资源目录 resource_dir）".to_string());
     }
 
     // 开发树：src-tauri/../sidecar/src/index.js
@@ -321,21 +351,24 @@ fn resolve_sidecar_index(_app: &AppHandle) -> Result<std::path::PathBuf, String>
     if dev_path.exists() {
         return Ok(dev_path);
     }
+    tried.push(dev_path.display().to_string());
 
-    // 打包环境
-    let packaged = dirs::data_local_dir()
-        .ok_or("无法获取本地数据目录")?
-        .join("DoubaoBatchImage")
-        .join("sidecar")
-        .join("src")
-        .join("index.js");
-    if packaged.exists() {
-        return Ok(packaged);
+    // 旧部署约定（本地数据目录）
+    if let Some(data_dir) = dirs::data_local_dir() {
+        let legacy = data_dir
+            .join("DoubaoBatchImage")
+            .join("sidecar")
+            .join("src")
+            .join("index.js");
+        if legacy.exists() {
+            return Ok(legacy);
+        }
+        tried.push(legacy.display().to_string());
     }
 
     Err(format!(
-        "未找到 sidecar 入口。请设置 SIDECAR_INDEX 环境变量，或确认已随应用部署 sidecar（期望位置: {}）",
-        packaged.display()
+        "未找到 sidecar 入口。已尝试以下位置：{}。请重新安装应用（安装包应随附 sidecar），或设置 SIDECAR_INDEX 环境变量显式指定入口。",
+        tried.join("；")
     ))
 }
 

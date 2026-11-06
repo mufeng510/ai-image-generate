@@ -11,6 +11,10 @@
 - 修复同一次应用启动中只有第一个任务能收到 sidecar 事件（事件接收器被首个任务永久取走、sidecar 又只在首次启动时创建通道）导致后续任务误判失败/卡死的问题；事件接收器改为跨任务共享的异步锁
 - 任务“已暂停”后点击“继续”此前不生效（状态被改为 preparing，调度器只捡取 pending）
 
+### 修复
+- 安装版应用点击“创建任务”报“未找到 sidecar 入口”：安装包此前未随附 sidecar，且 Rust 端只从环境变量和 `%LOCALAPPDATA%\DoubaoBatchImage\sidecar` 查找（该位置从未被任何脚本写入）。现将 sidecar（src + node_modules）作为 Tauri bundle 资源随安装包部署，`resolve_sidecar_index` 优先从安装目录的 `resource_dir()/sidecar/src/index.js` 解析；环境变量 `SIDECAR_INDEX` 和旧的本地数据目录路径保留为兜底，报错信息列出所有已尝试位置
+- sidecar 启动失败时，若缺少 Node.js（spawn 报 NotFound），日志明确提示需要 Node.js >= 20 及 `NODE_EXE` 设置方式
+
 ## [v1.0.0] - 2026-11-03
 
 ### 新增

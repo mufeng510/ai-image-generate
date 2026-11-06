@@ -57,6 +57,8 @@ cargo tauri build
 
 安装包输出在 `src-tauri/target/release/bundle/`（NSIS `.exe` / MSI）。
 
+安装包内置 sidecar：`src-tauri/tauri.conf.json` 的 `bundle.resources` 将 `sidecar/src`、`sidecar/package.json`、`sidecar/node_modules` 复制到安装目录的 `sidecar/` 下，Rust 端 `resolve_sidecar_index` 优先从 `resource_dir()/sidecar/src/index.js` 解析。安装版仍依赖用户机器上的 Node.js（`node` 在 PATH 或 `NODE_EXE` 环境变量）和 Playwright Chromium（`npx playwright install chromium`）。
+
 ## 发布（Release）与签名
 
 ### 更新签名（ed25519，免费，必需）

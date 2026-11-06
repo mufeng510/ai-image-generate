@@ -1,5 +1,12 @@
 # 用户指南
 
+## 使用前准备
+
+安装版应用已随附 sidecar（自动化运行时），但仍需以下环境（每台机器一次即可）：
+
+1. **Node.js >= 20**：`node` 需在 PATH 中，或设置环境变量 `NODE_EXE` 指向 node.exe 的完整路径。
+2. **Playwright Chromium 内核**：在命令行执行 `npx playwright install chromium` 下载（约 440MB）。机器上没有该内核时，启动任务会在浏览器启动阶段失败。
+
 ## 快速开始
 
 1. **安装软件**：运行 Windows 安装程序，完成安装。
