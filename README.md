@@ -13,7 +13,17 @@
 - **任务状态机**：支持 pending/preparing/selecting_images/uploading/submitting/generating/downloading/verifying/completed/paused/failed/cancelled/needs_manual_intervention 等状态
 - **异常恢复**：登录失效、验证码、网页结构变化等异常处理，暂停并等待人工处理
 - **国际化**：支持简体中文和英文
-- **国际化**：支持简体中文和英文
+
+## 代码签名政策（Code signing policy）
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+- **Team roles**
+  - Committers and reviewers: [mufeng510](https://github.com/mufeng510)（项目作者与维护者）
+  - Approvers: [mufeng510](https://github.com/mufeng510)
+- **Privacy policy**: This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. 所有参考图片、提示词、豆包登录会话均保留在用户本机（`%LOCALAPPDATA%\DoubaoBatchImage` 与项目目录），不上传任何数据。
+- **Uninstallation**: 卸载程序位于安装目录，或使用 Windows"设置 → 应用"卸载；应用不会修改用户系统配置，也不会驻留后台服务。
+
 
 ## 技术架构
 
