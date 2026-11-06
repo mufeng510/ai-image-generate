@@ -41,4 +41,3 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
-          includeSignature: true

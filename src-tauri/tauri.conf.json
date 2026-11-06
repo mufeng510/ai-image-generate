@@ -2,7 +2,7 @@
   "$schema": "https://tauri.app/schema/config.json",
   "identifier": "com.doubao.batchimage",
   "build": {
-    "frontendDist": "../src/dist",
+    "frontendDist": "../src-tauri/gen/dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
