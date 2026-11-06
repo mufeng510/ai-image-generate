@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react'
 import { settingsGet, settingsSet } from '@/hooks/api'
 import { useI18n } from '@/i18n'
+import { check, type Update } from '@tauri-apps/plugin-updater'
 
 export default function SettingsPage() {
   const { lang, setLang } = useI18n()
   const [projectRoot, setProjectRoot] = useState('')
   const [maxRetries, setMaxRetries] = useState('3')
   const [checking, setChecking] = useState(false)
+  const [installing, setInstalling] = useState(false)
+  const [update, setUpdate] = useState<Update | null>(null)
 
   async function load() {
     const v = await settingsGet('project_root')
@@ -23,16 +26,34 @@ export default function SettingsPage() {
   async function checkForUpdates() {
     setChecking(true)
     try {
-      alert('检查更新需要先配置 tauri.conf.json 的 updater.endpoints，并使用签名密钥构建安装包。')
+      const u = await check()
+      setUpdate(u)
+      if (u) {
+        alert(`发现新版本 ${u.version}${u.body ? '\n\n' + u.body : ''}`)
+      } else {
+        alert('当前已是最新版本')
+      }
     } catch (e) {
-      alert('检查更新失败: ' + String(e))
+      alert('检查更新失败（若未配置更新源，这是预期结果）: ' + String(e))
     } finally {
       setChecking(false)
     }
   }
 
   async function downloadAndInstall() {
-    alert('请先配置 tauri.conf.json 的 updater.endpoints 并构建签名安装包。')
+    if (!update) {
+      alert('请先点击“检查更新”')
+      return
+    }
+    setInstalling(true)
+    try {
+      await update.downloadAndInstall()
+      alert('更新已安装，请重启应用')
+    } catch (e) {
+      alert('下载或安装失败: ' + String(e))
+    } finally {
+      setInstalling(false)
+    }
   }
 
   async function saveKey(key: string, getVal: () => string, setVal: (v: string) => void) {
@@ -102,9 +123,10 @@ export default function SettingsPage() {
             </button>
             <button
               onClick={downloadAndInstall}
-              style={{ padding: '8px 16px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+              disabled={installing || !update}
+              style={{ padding: '8px 16px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '6px', cursor: installing || !update ? 'not-allowed' : 'pointer', opacity: installing || !update ? 0.6 : 1 }}
             >
-              下载更新
+              {installing ? '安装中…' : '下载并安装'}
             </button>
           </div>
         </div>

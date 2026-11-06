@@ -55,6 +55,47 @@ cargo tauri dev
 cargo tauri build
 ```
 
+安装包输出在 `src-tauri/target/release/bundle/`（NSIS `.exe` / MSI）。
+
+## 发布（Release）与签名
+
+### 更新签名（ed25519，免费，必需）
+
+用于自动更新时验证更新包完整性。私钥已生成并存放于 `C:\Users\mi\.tauri\ai-image-generate.key`（**勿提交、勿泄露、务必备份**）；对应公钥已写入 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`。
+
+本地验证更新签名：
+
+```bash
+# PowerShell
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content "$env:USERPROFILE\.tauri\ai-image-generate.key" -Raw
+npx tauri build
+```
+
+### GitHub Actions 自动发布
+
+仓库内置 `.github/workflows/release.yml`：推送 `v*` tag 时自动构建 Windows 安装包并发布 Release（含 `update.json` 与签名），供应用内更新检查使用。
+
+需要在 GitHub 仓库 Settings → Secrets and variables → Actions 配置：
+
+- `TAURI_SIGNING_PRIVATE_KEY` = `C:\Users\mi\.tauri\ai-image-generate.key` 的**文件完整内容**（私钥未设密码）
+
+发布步骤：
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+### Windows 代码签名（Authenticode，消除“未知发布者”）
+
+计划通过 **SignPath Foundation**（免费开源代码签名）签名：
+
+- 仓库已公开，并已添加 MIT LICENSE（符合其开源项目准入前提）
+- 私钥与更新签名无关，由 SignPath 签发/托管，需自行向 SignPath Foundation 提交申请并通过审核
+- 审核通过前，安装包会显示“未知发布者”提示，用户需手动选择“仍要运行”
+
+（若 SignPath 未通过或未申请，可考虑 Microsoft Store 上架（平台代签）或购买 OV/EV 证书。）
+
 ## 侧边车（Sidecar）
 
 `sidecar/` 目录下是 Node.js 自动化运行时，负责 Playwright Chromium 浏览器控制。

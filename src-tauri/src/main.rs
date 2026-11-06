@@ -14,7 +14,7 @@ fn main() {
     let scheduler = Arc::new(Scheduler::new());
     Builder::default()
         .plugin(tauri_plugin_shell::init())
-        // .plugin(tauri_plugin_updater::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(scheduler)
         .invoke_handler(tauri::generate_handler![
             commands::project_list,

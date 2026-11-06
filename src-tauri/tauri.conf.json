@@ -27,16 +27,19 @@
     "targets": "all",
     "icon": [
       "icons/icon.png"
-    ]
+    ],
+    "createUpdaterArtifacts": true
   },
   "plugins": {
     "updater": {
       "active": true,
-      "pubkey": "PLACEHOLDER_PUBLIC_KEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJBNUM5OTgyQkZCRTY5NUMKUldSY2FiNi9ncGxjdXBYdWtWSWM0TnYvVk9tTXdnQ256YlJ3aFlYZlJDb1FaV28vcFF0ZVQwUlQK",
       "endpoints": [
-        "https://your-update-server.com/update/${target}/${current_version}"
+        "https://github.com/mufeng510/ai-image-generate/releases/latest/download/update.json"
       ],
-      "dialog": true
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

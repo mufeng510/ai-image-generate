@@ -14,3 +14,7 @@ prototype/.userdata/
 *.user.js
 .tmp/
 prototype/src/.output/
+
+.tauri/
+*.key
+updater.key
