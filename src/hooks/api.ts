@@ -129,6 +129,27 @@ export interface LogEntry {
   level: string
   message: string
   created_at?: string
+  task_name?: string
+}
+
+export interface LogFilter {
+  task_id?: number | null
+  account_id?: number | null
+  level?: string | null
+  from?: string | null
+  to?: string | null
+  limit?: number
+}
+
+export interface Notification {
+  id?: number
+  kind: string
+  title: string
+  message: string
+  level: string
+  task_id?: number
+  read?: boolean
+  created_at?: string
 }
 
 export async function greet(name: string): Promise<string> {
@@ -281,4 +302,32 @@ export async function dashboardStats(): Promise<DashboardStats> {
 
 export async function executionLogs(limit: number = 100): Promise<LogEntry[]> {
   return invoke('execution_logs', { limit })
+}
+
+export async function logsQuery(filter: LogFilter): Promise<LogEntry[]> {
+  return invoke('logs_query', { filter })
+}
+
+export async function logsExport(filter: LogFilter, file_path: string): Promise<number> {
+  return invoke('logs_export', { filter, file_path })
+}
+
+export async function notificationList(limit = 50): Promise<Notification[]> {
+  return invoke('notification_list', { limit })
+}
+
+export async function notificationCreate(kind: string, title: string, message: string, level?: string, task_id?: number): Promise<Notification> {
+  return invoke('notification_create', { kind, title, message, level: level ?? null, task_id: task_id ?? null })
+}
+
+export async function notificationMarkRead(id: number): Promise<void> {
+  return invoke('notification_mark_read', { id })
+}
+
+export async function notificationMarkAllRead(): Promise<void> {
+  return invoke('notification_mark_all_read')
+}
+
+export async function notificationClear(): Promise<void> {
+  return invoke('notification_clear')
 }

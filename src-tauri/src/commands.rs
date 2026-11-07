@@ -1799,7 +1799,12 @@ pub async fn dashboard_stats() -> Result<DashboardStats, String> {
 pub async fn execution_logs(limit: i64) -> Result<Vec<LogEntry>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, task_id, level, message, created_at FROM execution_logs ORDER BY created_at DESC LIMIT ?1")
+        .prepare(
+            "SELECT l.id, l.task_id, l.level, l.message, l.created_at, t.name
+               FROM execution_logs l
+               LEFT JOIN tasks t ON l.task_id = t.id
+              ORDER BY l.created_at DESC LIMIT ?1",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([limit], |row| {
@@ -1809,15 +1814,266 @@ pub async fn execution_logs(limit: i64) -> Result<Vec<LogEntry>, String> {
                 level: row.get(2)?,
                 message: row.get(3)?,
                 created_at: row.get(4)?,
+                task_name: row.get(5)?,
             })
         })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+// ===== 日志筛选与导出 =====
+
+#[derive(Deserialize)]
+pub struct LogFilterPayload {
+    pub task_id: Option<i64>,
+    pub account_id: Option<i64>,
+    pub level: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub limit: Option<i64>,
+}
+
+fn logs_query_with_conn(
+    conn: &rusqlite::Connection,
+    filter: &LogFilterPayload,
+) -> Result<Vec<LogEntry>, String> {
+    let limit = filter.limit.unwrap_or(500).clamp(1, 5000);
+    let mut sql = String::from(
+        "SELECT l.id, l.task_id, l.level, l.message, l.created_at, t.name
+           FROM execution_logs l
+           LEFT JOIN tasks t ON l.task_id = t.id
+          WHERE 1 = 1",
+    );
+    let mut params: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(task_id) = filter.task_id {
+        sql.push_str(" AND l.task_id = ?");
+        params.push(rusqlite::types::Value::Integer(task_id));
+    }
+    if let Some(account_id) = filter.account_id {
+        sql.push_str(" AND t.account_id = ?");
+        params.push(rusqlite::types::Value::Integer(account_id));
+    }
+    if let Some(level) = &filter.level {
+        let trimmed = level.trim();
+        if !trimmed.is_empty() {
+            sql.push_str(" AND l.level = ?");
+            params.push(rusqlite::types::Value::Text(trimmed.to_string()));
+        }
+    }
+    if let Some(from) = &filter.from {
+        sql.push_str(" AND l.created_at >= ?");
+        params.push(rusqlite::types::Value::Text(from.clone()));
+    }
+    if let Some(to) = &filter.to {
+        sql.push_str(" AND l.created_at <= ?");
+        params.push(rusqlite::types::Value::Text(to.clone()));
+    }
+    sql.push_str(" ORDER BY l.created_at DESC LIMIT ?");
+    params.push(rusqlite::types::Value::Integer(limit));
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok(LogEntry {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                level: row.get(2)?,
+                message: row.get(3)?,
+                created_at: row.get(4)?,
+                task_name: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn logs_query(filter: LogFilterPayload) -> Result<Vec<LogEntry>, String> {
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    logs_query_with_conn(&conn, &filter)
+}
+
+/// CSV 字段转义：含逗号/引号/换行时包裹引号并加倍引号
+fn csv_field(value: &str) -> String {
+    if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+/// CSV 单元格：先做公式注入转义（首个非空白字符为 = + - @ 时加上前缀 '，防止 Excel 执行），再做字段转义
+fn csv_cell(value: &str) -> String {
+    let trimmed = value.trim_start();
+    let needs_prefix = trimmed
+        .chars()
+        .next()
+        .map(|c| matches!(c, '=' | '+' | '-' | '@'))
+        .unwrap_or(false);
+    if needs_prefix {
+        csv_field(&format!("'{}", value))
+    } else {
+        csv_field(value)
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn logs_export(filter: LogFilterPayload, file_path: String) -> Result<i64, String> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() {
+        return Err("导出路径不能为空".to_string());
+    }
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let rows = logs_query_with_conn(&conn, &filter)?;
+    // BOM 让 Excel 正确识别 UTF-8 中文
+    let mut out = String::from("\u{FEFF}时间,级别,任务ID,任务名称,消息\n");
+    for row in &rows {
+        out.push_str(&format!(
+            "{},{},{},{},{}\n",
+            csv_cell(row.created_at.as_deref().unwrap_or("")),
+            csv_cell(&row.level),
+            csv_cell(&row.task_id.map(|id| id.to_string()).unwrap_or_default()),
+            csv_cell(row.task_name.as_deref().unwrap_or("")),
+            csv_cell(&row.message)
+        ));
+    }
+    let parent = std::path::Path::new(trimmed)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    if !parent.as_os_str().is_empty() {
+        std::fs::create_dir_all(&parent).map_err(|e| format!("创建导出目录失败：{}", e))?;
+    }
+    std::fs::write(trimmed, out).map_err(|e| format!("写入导出文件失败：{}", e))?;
+    Ok(rows.len() as i64)
+}
+
+// ===== 通知中心 =====
+
+use crate::models::Notification;
+
+fn notification_row(row: &rusqlite::Row) -> Result<Notification, rusqlite::Error> {
+    let read_i64: i64 = row.get(6)?;
+    Ok(Notification {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        title: row.get(2)?,
+        message: row.get(3)?,
+        level: row.get(4)?,
+        task_id: row.get(5)?,
+        read: Some(read_i64 != 0),
+        created_at: row.get(7)?,
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn notification_list(limit: Option<i64>) -> Result<Vec<Notification>, String> {
+    let limit = limit.unwrap_or(50).clamp(1, 500);
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, kind, title, message, level, task_id, read, created_at FROM notifications ORDER BY id DESC LIMIT ?1")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([limit], notification_row)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn notification_create(
+    kind: String,
+    title: String,
+    message: String,
+    level: Option<String>,
+    task_id: Option<i64>,
+) -> Result<Notification, String> {
+    let title = title.trim();
+    let message = message.trim();
+    if title.is_empty() || message.is_empty() {
+        return Err("通知标题与内容不能为空".to_string());
+    }
+    // 限制长度与 level 枚举，防止 DB 膨胀与意外值
+    let title: String = title.chars().take(120).collect();
+    let message: String = message.chars().take(1000).collect();
+    let kind: String = kind.trim().chars().take(64).collect::<String>();
+    let kind = if kind.is_empty() { "general".to_string() } else { kind };
+    let level = level
+        .map(|v| v.trim().to_string())
+        .unwrap_or_else(|| "info".to_string());
+    let level = match level.as_str() {
+        "info" | "success" | "warn" | "error" => level,
+        _ => "info".to_string(),
+    };
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO notifications (kind, title, message, level, task_id, read, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
+        rusqlite::params![kind, title, message, level, task_id, now],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = conn.last_insert_rowid();
+    Ok(Notification {
+        id: Some(id),
+        kind,
+        title: title.to_string(),
+        message: message.to_string(),
+        level,
+        task_id,
+        read: Some(false),
+        created_at: Some(now),
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn notification_mark_read(id: i64) -> Result<(), String> {
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let affected = conn
+        .execute("UPDATE notifications SET read = 1 WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    if affected == 0 {
+        return Err("通知不存在".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn notification_mark_all_read() -> Result<(), String> {
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE notifications SET read = 1 WHERE read = 0", [])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn notification_clear() -> Result<(), String> {
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM notifications", [])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::make_task_name;
+    use super::{make_task_name, csv_field, csv_cell};
+
+    #[test]
+    fn csv_field_escapes_comma_quote_and_newline() {
+        assert_eq!(csv_field("plain"), "plain");
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_field("line1\nline2"), "\"line1\nline2\"");
+    }
+
+    #[test]
+    fn csv_cell_neutralizes_formula_prefix() {
+        assert_eq!(csv_cell("=1+1"), "'=1+1");
+        assert_eq!(csv_cell("+cmd"), "'+cmd");
+        assert_eq!(csv_cell("-10"), "'-10");
+        assert_eq!(csv_cell("@SUM(A1)"), "'@SUM(A1)");
+        assert_eq!(csv_cell("  =1+1"), "'  =1+1");
+        assert_eq!(csv_cell("plain"), "plain");
+        assert_eq!(csv_cell("a,b"), "\"a,b\"");
+    }
+
 
     #[test]
     fn make_task_name_uses_trimmed_project_and_date() {

@@ -16,6 +16,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(scheduler)
         .invoke_handler(tauri::generate_handler![
             commands::project_list,
@@ -60,6 +61,13 @@ fn main() {
             commands::task_update_round,
             commands::dashboard_stats,
             commands::execution_logs,
+            commands::logs_query,
+            commands::logs_export,
+            commands::notification_list,
+            commands::notification_create,
+            commands::notification_mark_read,
+            commands::notification_mark_all_read,
+            commands::notification_clear,
         ])
         .setup(|app| {
             let _ = db::init_db();

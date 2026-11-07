@@ -1365,7 +1365,14 @@ README 中说明：
   - 新增纯函数 `absorb_download_results` + 3 项单元测试（成功合并、上限内失败退回、上限耗尽后失败保留）。
   - 验证：`cargo test` 31 项通过、`npx tsc --noEmit`、`npm run build`；sidecar `node --check src/index.js` 通过。
   - 评审：dev-reviewer 两轮（两轮 Major：请求 id 缺失/成功结果被丢弃/image_index 错位/doc 错位）→ 均已修复；"超限后通知"目前落地为 UI 事件 + 状态，系统通知由 P1-4 接线。
-- [ ] **P1-4 日志与通知**：日志按任务/账号/时间筛选、导出；软件内通知 + Windows 系统通知（当前无通知插件，开关未接线）。
+- [x] **P1-4 日志与通知**：日志按任务/账号/时间筛选、导出；软件内通知 + Windows 系统通知（当前无通知插件，开关未接线）。
+  - 完成 2026-11-07：
+    - **日志**：`logs_query`（任务/账号/级别/起止时间，任务名左连接进 `task_name`）、`logs_export`（导出 CSV：BOM + RFC 4180 转义 + 公式注入前缀 `'`，系统保存对话框选择路径）；执行日志页新增上述筛选条与导出按钮，`execution_logs` 接口同步补充任务名。
+    - **软件内通知中心**：右上角悬浮铃铛 + 气泡通知（右下角）+ 通知面板（未读角标、全部已读/清空、点击进任务详情）；事件源：`task-started`（新增发射）、`task-completed`、`task-status-changed`(failed/needs_manual_intervention)、`retry-exhausted`、`account-threshold-reached`；通知持久化到 `notifications` 表（新表，user_version → 3）。
+    - **Windows 系统通知**：tauri-plugin-notification（npm ^2 / cargo "2"）+ capabilities `notification:default`；设置页「启用任务状态变更通知」开关已接线：开启时请求/检查权限，关闭权限未授予时保留软件内通知（不发系统通知）。
+    - 覆盖任务开始/完成/失败/需人工处理/阈值/最大重试；验证码、登录失效、网页结构变化等复用 `needs_manual_intervention` 同一通道。
+  - 验证：`cargo test` 33 项通过（新增 CSV 转义/公式注入 2 项）；`npx tsc --noEmit`、`npm run build`；GUI 实测执行日志页（筛选条、导出 CSV、表格任务名列）与通知铃铛/面板渲染正常。
+  - 评审（dev-reviewer, 首轮 4 Major/Minor）：CSV BOM 缺失、公式注入、导出与显示不一致（300 限制与提示）、通知列表/监听竞态 → 全部修复（`csv_cell`、UTF-8 BOM、导出 5000 上限明示、订阅先于拉取并按 id 去重合并）；通知 `kind/title/message/level` 均有长度与枚举钳制；SQL/参数顺序/IPC 命名/0-1→bool 映射经审查确认安全。
 - [ ] **P1-5 国际化与设置**：全部 UI 文案走 i18n 资源（当前约 20 个词条、大量硬编码中文）；补齐全局参数、执行模式、通知开关、浏览器设置、版本号等设置项。
 - [ ] **P1-6 数据库与诊断**：数据库迁移版本机制、关键状态更新事务、Playwright Trace、失败时保存 URL/截图/脱敏日志。
 - [ ] **P1-7 测试矩阵**：补齐文件夹单元识别、随机抽取、补足、池耗尽重洗、输出命名、状态转换、参数继承、账号阈值等单元测试；增加可重复运行的集成测试与真实浏览器 E2E。
@@ -1404,6 +1411,35 @@ README 中说明：
 - 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-07（P1-4 日志与通知）
+
+**改动文件**
+
+- `src-tauri/Cargo.toml` / `Cargo.lock`：新增 `tauri-plugin-notification = "2"`。
+- `src/package.json` / `package-lock.json`：新增 `@tauri-apps/plugin-notification`。
+- `src-tauri/gen/schemas/*.json`：tauri-build 自动更新（含 notification 权限）。
+- `src-tauri/tauri.conf.json`：无变更（本次仅 capability）。
+- `src-tauri/capabilities/default.json`：新增 `notification:default`。
+- `src-tauri/src/schema.rs`：新增 `notifications` 表（id, kind, title, message, level, task_id, read, created_at）+ 索引；`user_version` 目标升到 3。
+- `src-tauri/src/models.rs`：`LogEntry.task_name`、新增 `Notification`。
+- `src-tauri/src/commands.rs`：新增 `logs_query` / `logs_export`（BOM + RFC 4180 + 公式注入防护 `'=` 前缀）、`notification_list/create/mark_read/mark_all_read/clear`；`execution_logs` 左连接任务名；新增 2 项 CSV 测试。
+- `src-tauri/src/main.rs` + `src-tauri/src/task_scheduler.rs`：注册新命令；新增 `task-started` 事件（sidecar 启动成功后发射）。
+- `src/components/NotificationCenter.tsx`（新）：铃铛 + 面板 + 气泡通知；订阅 5 个事件；软件内通知落库；可选系统通知（`notify_enabled` + 系统权限）。
+- `src/App.tsx`：挂载 NotificationCenter（onOpenTask → 任务详情）。
+- `src/pages/Logs.tsx`：任务/账号/级别/起止时间筛选 + CSV 导出（上限 5000 明示）。
+- `src/pages/Settings.tsx`：启用任务状态变更通知（权限请求接线）。
+- `src/hooks/api.ts`：类型与调用封装。
+
+**验证**
+
+```powershell
+cd src-tauri; cargo test  # 33 passed
+cd ..; npx tsc --noEmit   # passed
+npm run build             # passed
+```
+
+**实机验证**：执行日志页筛选条渲染正常、筛选交互可用、导出 CSV 走系统保存对话框；通知铃铛面板、气泡、未读角标渲染正常；窗口已关闭。未启动真实任务，创建→气泡→面板链路以订阅与落表代码审查为依据。
 
 ### 2026-11-07（P1-3 重试机制）
 

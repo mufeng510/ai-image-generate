@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { settingsGet, settingsSet } from '@/hooks/api'
 import { useI18n } from '@/i18n'
 import { check, type Update } from '@tauri-apps/plugin-updater'
+import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification'
 
 export default function SettingsPage() {
   const { lang, setLang } = useI18n()
@@ -12,6 +13,7 @@ export default function SettingsPage() {
   const [checking, setChecking] = useState(false)
   const [installing, setInstalling] = useState(false)
   const [update, setUpdate] = useState<Update | null>(null)
+  const [notifyEnabled, setNotifyEnabled] = useState(false)
 
   async function load() {
     const v = await settingsGet('project_root')
@@ -22,6 +24,8 @@ export default function SettingsPage() {
     setConfirmSelection(cs === 'true')
     const cb = await settingsGet('confirm_before_submit')
     setConfirmBeforeSubmit(cb === 'true')
+    const ne = await settingsGet('notify_enabled')
+    setNotifyEnabled(ne === 'true')
   }
 
   useEffect(() => {
@@ -81,6 +85,32 @@ export default function SettingsPage() {
     }
   }
 
+  async function toggleNotify(value: boolean) {
+    if (!value) {
+      try {
+        await settingsSet('notify_enabled', 'false')
+        setNotifyEnabled(false)
+      } catch (e) {
+        alert('保存失败: ' + e)
+      }
+      return
+    }
+    try {
+      let granted = await isPermissionGranted()
+      if (!granted) {
+        const result = await requestPermission()
+        granted = result === 'granted'
+      }
+      if (!granted) {
+        alert('系统通知权限未授予，已开启软件内通知（不发送系统通知）')
+      }
+      await settingsSet('notify_enabled', 'true')
+      setNotifyEnabled(true)
+    } catch (e) {
+      alert('启用通知失败: ' + e)
+    }
+  }
+
   return (
     <div style={{ padding: '24px' }}>
       <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '24px' }}>设置</h2>
@@ -119,10 +149,12 @@ export default function SettingsPage() {
             <input
               id='notify'
               type='checkbox'
+              checked={notifyEnabled}
+              onChange={(e) => toggleNotify(e.target.checked)}
               style={{ width: '18px', height: '18px', cursor: 'pointer' }}
             />
             <label htmlFor='notify' style={{ fontSize: '13px', color: '#1a1a1a', cursor: 'pointer' }}>
-              启用任务状态变更通知
+              启用任务状态变更通知（任务开始/完成/失败/需人工处理/阈值/最大重试）
             </label>
           </div>
         </div>

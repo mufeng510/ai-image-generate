@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+﻿use rusqlite::Connection;
 
 pub fn create_tables(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute_batch(
@@ -111,6 +111,19 @@ pub fn create_tables(conn: &Connection) -> Result<(), Box<dyn std::error::Error>
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            level TEXT NOT NULL DEFAULT 'info',
+            task_id INTEGER,
+            read INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
+        CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read);
         "#,
     )?;
     Ok(())
@@ -156,7 +169,7 @@ fn migrate_inner(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap_or(0);
     // 只提升，不回退：避免覆盖未来更高的版本号
-    let target: i64 = 2;
+    let target: i64 = 3;
     if current < target {
         conn.pragma_update(None, "user_version", target)?;
     }
@@ -213,7 +226,7 @@ mod tests {
         .unwrap();
         conn.execute("INSERT INTO accounts (id, name) VALUES (5, '旧账号')", [])
             .unwrap();
-        conn.execute("INSERT INTO accounts (id, name) VALUES (9, '旧账号2')", [])
+        conn.execute("INSERT INTO accounts (id, name) VALUES (9, '旧账号二')", [])
             .unwrap();
 
         migrate(&conn).unwrap();
@@ -232,7 +245,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(order, vec![1, 2]);
-        assert_eq!(user_version(&conn), 2);
+        assert_eq!(user_version(&conn), 3);
     }
 
     #[test]
@@ -248,6 +261,6 @@ mod tests {
         assert!(columns(&conn, "tasks").contains(&"interrupted_status".to_string()));
         assert!(columns(&conn, "task_rounds").contains(&"output_dir".to_string()));
         assert!(columns(&conn, "accounts").contains(&"order_index".to_string()));
-        assert_eq!(user_version(&conn), 2);
+        assert_eq!(user_version(&conn), 3);
     }
 }

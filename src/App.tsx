@@ -7,6 +7,7 @@ import ExecutionPage from '@/pages/Execution'
 import RoundDetail from '@/pages/RoundDetail'
 import LogsPage from '@/pages/Logs'
 import SettingsPage from '@/pages/Settings'
+import NotificationCenter from '@/components/NotificationCenter'
 
 type Page = 'dashboard' | 'projects' | 'accounts' | 'tasks' | 'settings' | 'taskDetail' | 'logs'
 
@@ -70,6 +71,7 @@ export default function App() {
         </div>
       </aside>
       <main style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+        <NotificationCenter onOpenTask={(id) => { setSelectedTaskId(id); setPage('taskDetail') }} />
         {page === 'dashboard' && <DashboardPage />}
         {page === 'projects' && <ProjectsPage />}
         {page === 'accounts' && <AccountsPage />}

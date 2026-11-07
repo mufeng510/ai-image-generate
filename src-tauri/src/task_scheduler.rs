@@ -931,6 +931,8 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
         }
     };
     eprintln!("[调度器] start_browser 响应: {:?}", res);
+    // 任务真正进入执行流程，供通知中心提示
+    let _ = app.emit("task-started", serde_json::json!({ "task_id": tid }));
 
     // 3~8. 按轮执行：每轮重新抽图、读取提示词、生成、提取、下载、校验
     let total_rounds = task.total_rounds.unwrap_or(0).max(1);

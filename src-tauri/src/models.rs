@@ -141,6 +141,20 @@ pub struct LogEntry {
     pub level: String,
     pub message: String,
     pub created_at: Option<String>,
+    pub task_name: Option<String>,
+}
+
+/// 应用内通知（软件内通知中心；系统通知由前端另发）
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Notification {
+    pub id: Option<i64>,
+    pub kind: String,
+    pub title: String,
+    pub message: String,
+    pub level: String,
+    pub task_id: Option<i64>,
+    pub read: Option<bool>,
+    pub created_at: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
