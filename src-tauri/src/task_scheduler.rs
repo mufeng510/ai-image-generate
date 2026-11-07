@@ -19,6 +19,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::process::{ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
@@ -626,10 +627,17 @@ enum WaitOutcome {
     Interrupted,
 }
 
-/** 等待某个 result 命令的结果（带超时，并响应暂停/取消） */
+/** 生成一次性 request_id（每次 send 一个新的），用于把 sidecar 的迟到结果与当前等待关联 */
+fn new_request_id() -> String {
+    static REQUEST_SEQ: AtomicU64 = AtomicU64::new(0);
+    format!("req-{}", REQUEST_SEQ.fetch_add(1, Ordering::Relaxed) + 1)
+}
+
+/** 等待某个 result 命令的结果（带超时，并响应暂停/取消）；request_id 用于忽略迟到的旧结果 */
 async fn wait_result(
     rx: &mut mpsc::UnboundedReceiver<serde_json::Value>,
     cmd: &str,
+    request_id: &str,
     timeout_s: u64,
     scheduler: &Scheduler,
     task_id: i64,
@@ -647,7 +655,8 @@ async fn wait_result(
             Ok(Some(ev)) => {
                 let t = ev.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 let c = ev.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
-                if (t == "result" || t == "error") && c == cmd {
+                let rid = ev.get("request_id").and_then(|v| v.as_str()).unwrap_or("");
+                if (t == "result" || t == "error") && c == cmd && rid == request_id {
                     // 结果返回前用户已请求暂停/取消：不执行后续步骤
                     if scheduler.control_state(task_id) != ControlState::Running {
                         return WaitOutcome::Interrupted;
@@ -894,9 +903,11 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
     set_task_status(&app, tid, "preparing", "启动可见浏览器…");
     eprintln!("[调度器] 任务 {} 启动可见浏览器…", tid);
     eprintln!("[调度器] 发送 start_browser 命令 (account_id={})…", account_id);
+    let start_request_id = new_request_id();
     let start_cmd = serde_json::json!({
         "cmd": "start_browser",
         "task_id": tid,
+        "request_id": start_request_id,
         "account_id": account_id,
         "user_data_dir": user_data_dir,
     });
@@ -906,7 +917,7 @@ async fn execute_task(app: AppHandle, scheduler: Arc<Scheduler>, task: Task) {
         return;
     }
     eprintln!("[调度器] 等待 start_browser 响应 (最长 90 秒)…");
-    let res = match wait_result(event_rx, "start_browser", 90, &scheduler, tid).await {
+    let res = match wait_result(event_rx, "start_browser", &start_request_id, 90, &scheduler, tid).await {
         WaitOutcome::Result(v) => v,
         WaitOutcome::Timeout => {
             set_task_status(&app, tid, "failed", "启动浏览器超时");
@@ -960,8 +971,54 @@ fn allocate_round_dir(output_root: &std::path::Path) -> std::path::PathBuf {
     candidate
 }
 
-/** 多轮循环：逐轮执行，全部成功后才标记任务完成 */
-#[allow(clippy::too_many_arguments)]
+/** 处理一次下载结果：与 pending 按顺序一一对应（sidecar 按请求顺序返回）。
+ *  - 成功项放入 `merged`（保留原始 index 用于文件命名 / image_index）；
+ *  - 失败项放入返回值（需要在仍未超过重试上限时重新提交）；
+ *  - 达到重试上限且仍有失败项时，失败项也写入 `merged`（供校验与日志），但调用方必须暂停任务。 */
+fn absorb_download_results(
+    merged: &mut Vec<serde_json::Value>,
+    pending: &[serde_json::Value],
+    results: &[serde_json::Value],
+    attempt: i64,
+    max_retries: i64,
+) -> Vec<serde_json::Value> {
+    let mut still = Vec::new();
+    for (i, item) in pending.iter().enumerate() {
+        match results.get(i) {
+            Some(res) => {
+                if res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    merged.push(res.clone());
+                } else {
+                    still.push(item.clone());
+                    if attempt >= max_retries {
+                        // 最后一次尝试仍失败：保留失败结果供校验与记录
+                        merged.push(res.clone());
+                    }
+                }
+            }
+            None => still.push(item.clone()),
+        }
+    }
+    still
+}
+
+/** 读取用户设置的最大重试次数（0–10；缺省 3） */
+fn read_max_retries() -> i64 {
+    if let Ok(conn) = get_connection() {
+        let raw: Option<String> = conn
+            .query_row("SELECT value FROM app_settings WHERE key = 'max_retries'", [], |r| {
+                r.get(0)
+            })
+            .ok();
+        if let Some(raw) = raw {
+            if let Ok(n) = raw.trim().parse::<i64>() {
+                return n.clamp(0, 10);
+            }
+        }
+    }
+    3
+}
+
 /** 账号阈值的纯函数形式，便于单元测试 */
 fn over_threshold(verified_images: i64, threshold: &Option<i64>) -> bool {
     match threshold {
@@ -1105,6 +1162,8 @@ fn pause_if_account_threshold_reached(app: &AppHandle, tid: i64, account_id: i64
     false
 }
 
+/** 多轮循环：逐轮执行，全部成功后才标记任务完成 */
+#[allow(clippy::too_many_arguments)]
 async fn run_rounds_loop(
     app: &AppHandle,
     scheduler: &Scheduler,
@@ -1196,34 +1255,69 @@ async fn run_single_round(
     let prompt = read_prompt(project_root, prompt_path);
 
     // 3. selecting_images：扫描参考图 + 文件夹独立抽取 5 张
-    set_task_status(app, tid, "selecting_images", "扫描参考图片并抽取本轮图片");
-    eprintln!("[调度器] 发送 scan_images 命令…");
+    // 超时/网络类失败可自动重试（页面扫描是安全操作，不触碰生图提交）；其他失败原样落地
+    let max_retries = read_max_retries();
     let state_dir = app_data_dir()
         .map(|d| d.join("pool").join(format!("project_{}", project_id)))
         .unwrap_or_else(|_| project_root.join(".doubao"));
     let units_file = state_dir.join(format!("round_{}.units.json", round_number));
-    let scan_cmd = serde_json::json!({
-        "cmd": "scan_images",
-        "task_id": tid,
-        "root_path": project_root.to_string_lossy(),
-        "round_number": round_number,
-        "state_dir": state_dir.to_string_lossy(),
-        "units_file": units_file.to_string_lossy(),
-        "count": 5,
-    });
-    if let Err(e) = scheduler.send_sidecar_cmd(scan_cmd) {
-        set_task_status(app, tid, "failed", &format!("发送扫描命令失败: {}", e));
-        return Err(());
-    }
-    let scan_res = match wait_result(event_rx, "scan_images", 120, scheduler, tid).await {
-        WaitOutcome::Result(v) => v,
-        WaitOutcome::Timeout => {
-            set_task_status(app, tid, "failed", "扫描参考图片超时");
-            return Err(());
+    let mut scan_attempts = 0i64;
+    let scan_res = loop {
+        if scan_attempts > 0 {
+            set_task_status(
+                app,
+                tid,
+                "selecting_images",
+                &format!("参考图扫描重试中（第 {} 次）", scan_attempts),
+            );
+        } else {
+            set_task_status(app, tid, "selecting_images", "扫描参考图片并抽取本轮图片");
         }
-        WaitOutcome::Interrupted => {
-            finish_interrupted(scheduler, tid, None, "抽取参考图阶段被中断");
-            return Err(());
+        eprintln!("[调度器] 发送 scan_images 命令…");
+        let scan_request_id = new_request_id();
+        let scan_cmd = serde_json::json!({
+            "cmd": "scan_images",
+            "task_id": tid,
+            "request_id": scan_request_id,
+            "root_path": project_root.to_string_lossy(),
+            "round_number": round_number,
+            "state_dir": state_dir.to_string_lossy(),
+            "units_file": units_file.to_string_lossy(),
+            "count": 5,
+        });
+        if let Err(e) = scheduler.send_sidecar_cmd(scan_cmd) {
+            scan_attempts += 1;
+            if let Ok(conn) = get_connection() {
+                let _ = db_write_log(&conn, Some(tid), "warn",
+                    &format!("发送扫描命令失败（第 {} 次）：{}", scan_attempts, e));
+            }
+            if scan_attempts > max_retries {
+                set_task_status(app, tid, "needs_manual_intervention",
+                    &format!("发送扫描命令失败，已达最大重试次数（{}），已暂停", max_retries));
+                let _ = app.emit("retry-exhausted", serde_json::json!({ "task_id": tid, "stage": "scan", "max_retries": max_retries }));
+                return Err(());
+            }
+            continue;
+        }
+        match wait_result(event_rx, "scan_images", &scan_request_id, 120, scheduler, tid).await {
+            WaitOutcome::Result(v) => break v,
+            WaitOutcome::Timeout => {
+                scan_attempts += 1;
+                if let Ok(conn) = get_connection() {
+                    let _ = db_write_log(&conn, Some(tid), "warn",
+                        &format!("参考图扫描超时（第 {} 次），将重试", scan_attempts));
+                }
+                if scan_attempts > max_retries {
+                    set_task_status(app, tid, "needs_manual_intervention",
+                        &format!("参考图扫描达到最大重试次数（{}），已暂停。检查网络后点「继续执行」", max_retries));
+                    let _ = app.emit("retry-exhausted", serde_json::json!({ "task_id": tid, "stage": "scan", "max_retries": max_retries }));
+                    return Err(());
+                }
+            }
+            WaitOutcome::Interrupted => {
+                finish_interrupted(scheduler, tid, None, "抽取参考图阶段被中断");
+                return Err(());
+            }
         }
     };
     eprintln!("[调度器] scan_images 响应: {:?}", scan_res);
@@ -1306,9 +1400,11 @@ async fn run_single_round(
     let refs_paths: Vec<String> = selected.iter()
         .filter_map(|v| v.get("path").and_then(|s| s.as_str()).map(|s| s.to_string()))
         .collect();
+    let generate_request_id = new_request_id();
     let gen_cmd = serde_json::json!({
         "cmd": "generate_images",
         "task_id": tid,
+        "request_id": generate_request_id,
         "account_id": account_id,
         "project_root": project_root.to_string_lossy(),
         "refs": refs_paths,
@@ -1320,7 +1416,7 @@ async fn run_single_round(
         return Err(());
     }
     set_task_status(app, tid, "submitting", "已提交，等待生成完成");
-    let gen_res = match wait_result(event_rx, "generate_images", 300, scheduler, tid).await {
+    let gen_res = match wait_result(event_rx, "generate_images", &generate_request_id, 300, scheduler, tid).await {
         WaitOutcome::Result(v) => v,
         WaitOutcome::Timeout => {
             if let Ok(conn) = get_connection() {
@@ -1474,11 +1570,14 @@ async fn finish_after_generation(
     round_id: i64,
     prompt: &str,
 ) -> Option<i64> {
+    let max_retries = read_max_retries();
     // 5. generating → 提取：DOM 扫描生成图片 URL
     set_task_status(app, tid, "generating", "生成完成，提取图片 URL");
+    let extract_request_id = new_request_id();
     let extract_cmd = serde_json::json!({
         "cmd": "extract_images",
         "task_id": tid,
+        "request_id": extract_request_id,
         "account_id": account_id,
         "project_root": project_root.to_string_lossy(),
     });
@@ -1486,7 +1585,7 @@ async fn finish_after_generation(
         set_task_status(&app, tid, "failed", &format!("发送提取命令失败: {}", e));
         return None;
     }
-    let extract_res = match wait_result(event_rx, "extract_images", 180, scheduler, tid).await {
+    let extract_res = match wait_result(event_rx, "extract_images", &extract_request_id, 180, scheduler, tid).await {
         WaitOutcome::Result(v) => v,
         WaitOutcome::Timeout => {
             if let Ok(conn) = get_connection() {
@@ -1519,6 +1618,7 @@ async fn finish_after_generation(
     }
 
     // 6. downloading：下载到本轮输出目录
+    // 失败文件只重传未完成的，最多 max_retries 次；不触发任何生图提交
     set_task_status(&app, tid, "downloading", "下载生成图片");
     let download_items: Vec<serde_json::Value> = raw_images.iter().enumerate().map(|(idx, img)| {
         serde_json::json!({
@@ -1526,37 +1626,89 @@ async fn finish_after_generation(
             "index": idx,
         })
     }).collect();
-    let download_cmd = serde_json::json!({
-        "cmd": "download_images",
-        "task_id": tid,
-        "account_id": account_id,
-        "round_id": round_id,
-        "round_dir": round_dir.to_string_lossy(),
-        "images": download_items,
-    });
-    if let Err(e) = scheduler.send_sidecar_cmd(download_cmd) {
-        set_task_status(&app, tid, "failed", &format!("发送下载命令失败: {}", e));
-        return None;
-    }
-    let dl_res = match wait_result(event_rx, "download_images", 300, scheduler, tid).await {
-        WaitOutcome::Result(v) => v,
-        WaitOutcome::Timeout => {
+    let mut pending: Vec<serde_json::Value> = download_items.clone();
+    let mut download_results: Vec<serde_json::Value> = Vec::new();
+    let mut download_attempts = 0i64;
+    let mut download_retry_exhausted = false;
+    loop {
+        if pending.is_empty() {
+            break;
+        }
+        let download_request_id = new_request_id();
+        let download_cmd = serde_json::json!({
+            "cmd": "download_images",
+            "task_id": tid,
+            "request_id": download_request_id,
+            "account_id": account_id,
+            "round_id": round_id,
+            "round_dir": round_dir.to_string_lossy(),
+            "images": pending,
+        });
+        if let Err(e) = scheduler.send_sidecar_cmd(download_cmd) {
+            download_attempts += 1;
             if let Ok(conn) = get_connection() {
-                let _ = conn.execute(
-                    "UPDATE task_rounds SET status = 'failed', failure_reason = 'download_timeout', completed_at = ?1 WHERE id = ?2",
-                    rusqlite::params![Utc::now().to_rfc3339(), round_id],
-                );
+                let _ = db_write_log(&conn, Some(tid), "warn",
+                    &format!("发送下载命令失败（第 {} 次）：{}", download_attempts, e));
             }
-            set_task_status(app, tid, "failed", "下载生成图片超时（已下载文件保留）");
-            return None;
+            if download_attempts > max_retries {
+                download_retry_exhausted = true;
+                break;
+            }
+            continue;
         }
-        WaitOutcome::Interrupted => {
-            finish_interrupted(scheduler, tid, Some(round_id), "下载生成图片阶段被中断");
-            return None;
+        let dl_res = match wait_result(event_rx, "download_images", &download_request_id, 300, scheduler, tid).await {
+            WaitOutcome::Result(v) => v,
+            WaitOutcome::Timeout => {
+                download_attempts += 1;
+                if let Ok(conn) = get_connection() {
+                    let _ = db_write_log(&conn, Some(tid), "warn",
+                        &format!("下载等待超时（第 {} 次），将重试未完成文件", download_attempts));
+                }
+                if download_attempts > max_retries {
+                    download_retry_exhausted = true;
+                    break;
+                }
+                continue;
+            }
+            WaitOutcome::Interrupted => {
+                finish_interrupted(scheduler, tid, Some(round_id), "下载生成图片阶段被中断");
+                return None;
+            }
+        };
+        let results: Vec<serde_json::Value> = dl_res
+            .get("results").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let still_pending = absorb_download_results(
+            &mut download_results,
+            &pending,
+            &results,
+            download_attempts,
+            max_retries,
+        );
+        if still_pending.is_empty() {
+            break;
         }
-    };
-    let download_results: Vec<serde_json::Value> = dl_res
-        .get("results").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        download_attempts += 1;
+        if download_attempts > max_retries {
+            download_retry_exhausted = true;
+            break;
+        }
+        set_task_status(
+            &app,
+            tid,
+            "downloading",
+            &format!("下载失败，重试未完成文件（第 {} 次）：还剩 {} 张", download_attempts, still_pending.len()),
+        );
+        if let Ok(conn) = get_connection() {
+            let _ = db_write_log(&conn, Some(tid), "warn",
+                &format!("下载失败，将重试未完成文件：第 {} 次，还剩 {} 张", download_attempts, still_pending.len()));
+        }
+        pending = still_pending;
+    }
+    // 失败与成功混合时按原始顺序回写（文件命名顺序与下载顺序一致，便于 001.png 对应 task_images.image_index）
+    let mut download_results = download_results;
+    download_results.sort_by_key(|r| {
+        r.get("index").and_then(|v| v.as_i64()).unwrap_or(i64::MAX)
+    });
 
     // 7. verifying：写入图片记录、计算成功数
     let mut success_count = 0i64;
@@ -1575,12 +1727,16 @@ async fn finish_after_generation(
             let sha256 = item.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let ext = item.get("ext").and_then(|v| v.as_str()).unwrap_or("png").to_string();
             let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let image_index = item
+                .get("index")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_else(|| (i as i64) + 1);
             if ok { success_count += 1; }
             let _ = conn.execute(
                 "INSERT INTO task_images (task_round_id, image_index, original_url, saved_path, sha256, file_size, format, download_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 rusqlite::params![
                     round_id,
-                    (i as i64) + 1,
+                    image_index,
                     url,
                     path,
                     if sha256.is_empty() { None } else { Some(sha256) },
@@ -1592,12 +1748,25 @@ async fn finish_after_generation(
         }
 
         let total = download_results.len() as i64;
-        let round_status = if success_count > 0 { "completed" } else { "failed" };
+        let round_status = if download_retry_exhausted {
+            "needs_manual_intervention"
+        } else if success_count > 0 {
+            "completed"
+        } else {
+            "failed"
+        };
         let now_round = Utc::now().to_rfc3339();
-        let _ = conn.execute(
-            "UPDATE task_rounds SET status = ?1, success_count = ?2, completed_at = ?3 WHERE id = ?4",
-            rusqlite::params![round_status, success_count, now_round, round_id],
-        );
+        let _ = if download_retry_exhausted {
+            conn.execute(
+                "UPDATE task_rounds SET status = ?1, success_count = ?2, failure_reason = 'download_retries_exhausted', completed_at = ?3 WHERE id = ?4",
+                rusqlite::params![round_status, success_count, now_round, round_id],
+            )
+        } else {
+            conn.execute(
+                "UPDATE task_rounds SET status = ?1, success_count = ?2, completed_at = ?3 WHERE id = ?4",
+                rusqlite::params![round_status, success_count, now_round, round_id],
+            )
+        };
         // 记录账号最近使用时间（用于按列表轮换参考）
         let _ = conn.execute(
             "UPDATE accounts SET last_used_at = ?1 WHERE id = ?2",
@@ -1624,6 +1793,20 @@ async fn finish_after_generation(
         prompt,
         &download_results,
     );
+    if download_retry_exhausted {
+        // 保留已下载文件与校验记录，暂停并通知（由调用方停止后续轮次）
+        set_task_status(
+            app,
+            tid,
+            "needs_manual_intervention",
+            &format!("下载达到最大重试次数（{}），已暂停。已保留已下载图片与校验记录", max_retries),
+        );
+        let _ = app.emit(
+            "retry-exhausted",
+            serde_json::json!({ "task_id": tid, "stage": "download", "max_retries": max_retries, "success_images": success_count }),
+        );
+        return None;
+    }
     Some(success_count)
 }
 
@@ -1711,9 +1894,11 @@ async fn resume_task_inner(app: &AppHandle, scheduler: &Arc<Scheduler>, tid: i64
 
     set_task_status(app, tid, "generating", "继续执行：先检查页面状态");
 
+    let resume_request_id = new_request_id();
     let resume_cmd = serde_json::json!({
         "cmd": "resume_generate",
         "task_id": tid,
+        "request_id": resume_request_id,
         "account_id": account_id,
         "generation_timeout_ms": 180000,
         // 人工确认节点：用户已确认，允许替用户点击一次发送
@@ -1722,7 +1907,7 @@ async fn resume_task_inner(app: &AppHandle, scheduler: &Arc<Scheduler>, tid: i64
     scheduler.send_sidecar_cmd(resume_cmd)?;
 
     // resume_generate 最长等一个生图周期（180s）+ 余量
-    let res = match wait_result(event_rx, "resume_generate", 240, scheduler, tid).await {
+    let res = match wait_result(event_rx, "resume_generate", &resume_request_id, 240, scheduler, tid).await {
         WaitOutcome::Result(v) => v,
         WaitOutcome::Timeout => {
             set_task_status(app, tid, "needs_manual_intervention", "继续执行：等待页面状态超时，请检查浏览器后重试");
@@ -1870,9 +2055,11 @@ async fn resume_selection_round(
     let event_rx = rx_guard.as_mut().ok_or("sidecar 事件通道未初始化")?;
 
     set_task_status(app, tid, "uploading", "人工确认完成：上传参考图片并提交生图");
+    let generate_request_id = new_request_id();
     let gen_cmd = serde_json::json!({
         "cmd": "generate_images",
         "task_id": tid,
+        "request_id": generate_request_id,
         "account_id": account_id,
         "project_root": project_root.to_string_lossy(),
         "refs": refs,
@@ -1881,7 +2068,7 @@ async fn resume_selection_round(
     });
     scheduler.send_sidecar_cmd(gen_cmd)?;
     set_task_status(app, tid, "submitting", "已提交，等待生成完成");
-    let gen_res = match wait_result(event_rx, "generate_images", 300, scheduler, tid).await {
+    let gen_res = match wait_result(event_rx, "generate_images", &generate_request_id, 300, scheduler, tid).await {
         WaitOutcome::Result(v) => v,
         WaitOutcome::Timeout => {
             clear_interrupted_status(tid);
@@ -2082,6 +2269,54 @@ mod tests {
         // 控制状态按任务隔离
         scheduler.request_pause(7);
         assert_eq!(scheduler.control_state(8), ControlState::Running);
+    }
+
+    fn pending_item(url: &str, index: i64) -> serde_json::Value {
+        serde_json::json!({ "url": url, "index": index })
+    }
+
+    #[test]
+    fn absorb_download_results_merges_successes_orders_by_pending() {
+        let pending = vec![pending_item("a", 0), pending_item("b", 1)];
+        let results = vec![
+            serde_json::json!({ "index": 1, "url": "a", "ok": true }),
+            serde_json::json!({ "index": 2, "url": "b", "ok": true }),
+        ];
+        let mut merged = Vec::new();
+        let still = absorb_download_results(&mut merged, &pending, &results, 0, 3);
+        assert!(still.is_empty());
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn absorb_download_results_failed_items_are_retried_until_the_cap() {
+        let pending = vec![pending_item("a", 0), pending_item("b", 1)];
+        let results = vec![
+            serde_json::json!({ "index": 1, "url": "a", "ok": true }),
+            serde_json::json!({ "index": 2, "url": "b", "ok": false, "error": "network" }),
+        ];
+        // 重试上限内：成功保留、失败退回重试、失败项不写入 merged
+        let mut merged = Vec::new();
+        let still = absorb_download_results(&mut merged, &pending, &results, 0, 3);
+        assert_eq!(still.len(), 1);
+        assert_eq!(still[0], pending[1]);
+        assert_eq!(merged.len(), 1);
+        // 最后一次尝试仍失败：失败项写入 merged 供校验与暂停
+        let mut merged2 = Vec::new();
+        let still2 = absorb_download_results(&mut merged2, &pending, &results, 3, 3);
+        assert_eq!(still2.len(), 1);
+        assert_eq!(merged2.len(), 2);
+    }
+
+    #[test]
+    fn absorb_download_results_missing_results_stay_pending() {
+        let pending = vec![pending_item("a", 0), pending_item("b", 1)];
+        let results = vec![serde_json::json!({ "index": 1, "url": "a", "ok": true })];
+        let mut merged = Vec::new();
+        let still = absorb_download_results(&mut merged, &pending, &results, 0, 3);
+        assert_eq!(still.len(), 1);
+        assert_eq!(still[0]["url"], "b");
+        assert_eq!(merged.len(), 1);
     }
 
     #[test]

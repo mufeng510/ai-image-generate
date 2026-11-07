@@ -862,15 +862,15 @@ function setupStdin() {
         (async () => {
           try {
             const result = await handleCommand(cmd);
-            emit({ type: 'result', cmd: cmd.cmd, ...result });
+            emit({ type: 'result', cmd: cmd.cmd, request_id: cmd.request_id, ...result });
           } catch (err) {
             if (err instanceof AbortError) {
               log('warn', `命令 ${cmd.cmd} 已中止: ${err.message}`);
-              emit({ type: 'result', cmd: cmd.cmd, ok: false, reason: 'aborted', message: err.message });
+              emit({ type: 'result', cmd: cmd.cmd, request_id: cmd.request_id, ok: false, reason: 'aborted', message: err.message });
               return;
             }
             log('error', `处理命令 ${cmd.cmd} 异常: ${err.message}`);
-            emit({ type: 'error', cmd: cmd.cmd, message: err.message });
+            emit({ type: 'error', cmd: cmd.cmd, request_id: cmd.request_id, message: err.message });
           }
         })();
       } catch (err) {

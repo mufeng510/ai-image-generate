@@ -17,7 +17,7 @@ export default function SettingsPage() {
     const v = await settingsGet('project_root')
     if (v) setProjectRoot(v)
     const m = await settingsGet('max_retries')
-    if (m) setMaxRetries(m)
+    if (m) setMaxRetries(String(Math.max(0, Math.min(10, Number(m) || 3))))
     const cs = await settingsGet('confirm_selection')
     setConfirmSelection(cs === 'true')
     const cb = await settingsGet('confirm_before_submit')

@@ -1354,7 +1354,17 @@ README 中说明：
     - 账号删除保护：存在未完成任务时拒绝删除；`load_task_context` 遇到已删除账号的空资料目录时拒绝启动自动化。
   - 新增命令：`account_reorder`、`account_threshold_set`；`task_create` 的 `account_id` 改为可选（缺省自动轮换）。
   - 验证：`cargo test` 28 项通过（新增自动轮换/阈值/回填/排序完整性/名称校验共 5 项）；`npx tsc --noEmit`、`npm run build` 通过；GUI 实测账号页（行首拖动手柄、统计列、阈值输入、已达阈值徽章）与任务页"自动选择账号"均正常渲染。
-- [ ] **P1-3 重试机制**：按错误类型自动重试、最大重试次数生效、下载中断续传、超过上限暂停并通知。
+- [x] **P1-3 重试机制**：按错误类型自动重试、最大重试次数生效、下载中断续传、超过上限暂停并通知。
+  - 完成 2026-11-07：
+    - `max_retries`（默认 3，0–10 钳制）现在接入执行路径：`read_max_retries()` 读取 `app_settings`。
+    - **扫描重试**（`run_single_round`）：`scan_images` 的 Timeout 类（临时网络）失败按指数记录日志，最多 max_retries 次，仍失败则 `needs_manual_intervention` 并发送 `retry-exhausted`（stage=scan）；页面 DOM 类失败（ok=false 的引用/提示词问题）不重试，原样坍缩到失败状态。
+    - **下载续传**（`finish_after_generation`）：失败文件只重传未完成项（原 `index` 保持不变，`001.png` 文件名稳定）；最多 `max_retries` 次重试，仍有失败时保留结果；超过上限 → 暂停任务（`needs_manual_intervention`）、写入 `failure_reason='download_retries_exhausted'`、已下载文件与校验结果保留、向 UI 发送 `retry-exhausted` 事件。
+    - **request_id 关联**：sidecar `handleCommand` 对所有 result/error 回包携带 `request_id`，调度器 `wait_result` 按 request_id 过滤（每次 send 生成一次性 id），彻底消除超时后迟到响应被误消费的问题。
+    - 每个下载 attempt 记录 `execution_logs`；Settings 页钳制显示 0–10。
+  - 明确不回退的：`generate_images` 没有被接入重试（生图提交前许可边界：未知状态不盲目重发）；`submit_pending` 仅在「确认后继续」时使用，不受重试影响。
+  - 新增纯函数 `absorb_download_results` + 3 项单元测试（成功合并、上限内失败退回、上限耗尽后失败保留）。
+  - 验证：`cargo test` 31 项通过、`npx tsc --noEmit`、`npm run build`；sidecar `node --check src/index.js` 通过。
+  - 评审：dev-reviewer 两轮（两轮 Major：请求 id 缺失/成功结果被丢弃/image_index 错位/doc 错位）→ 均已修复；"超限后通知"目前落地为 UI 事件 + 状态，系统通知由 P1-4 接线。
 - [ ] **P1-4 日志与通知**：日志按任务/账号/时间筛选、导出；软件内通知 + Windows 系统通知（当前无通知插件，开关未接线）。
 - [ ] **P1-5 国际化与设置**：全部 UI 文案走 i18n 资源（当前约 20 个词条、大量硬编码中文）；补齐全局参数、执行模式、通知开关、浏览器设置、版本号等设置项。
 - [ ] **P1-6 数据库与诊断**：数据库迁移版本机制、关键状态更新事务、Playwright Trace、失败时保存 URL/截图/脱敏日志。
@@ -1394,6 +1404,26 @@ README 中说明：
 - 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-07（P1-3 重试机制）
+
+**改动文件**
+
+- `sidecar/src/index.js`：`handleCommand` 的 result/error 回包携带 `request_id`。
+- `src-tauri/src/task_scheduler.rs`：`read_max_retries()`（默认 3，0–10）、request_id 一次性关联（`new_request_id()` + `wait_result(request_id)`）；扫描阶段 Timeout 类失败按上限自动重试（`retry-exhausted`，stage=scan）；下载阶段按残缺集合重试，成功/失败合并按原始顺序回写（image_index = sidecar 原始 index）；超过上限 → `needs_manual_intervention` + `download_retries_exhausted` + 发送 `retry-exhausted`（已下载文件与校验记录保留）、仍走 verifying 入库；`absorb_download_results` 纯函数 + 3 项单元测试；修复 doc/allow 错位。
+- `src/pages/Settings.tsx`：最大重试次数 0–10 钳制。
+- 无 Tauri 配置、schema、capabilities 变更。
+
+**验证**
+
+```powershell
+cd src-tauri; cargo test  # 31 passed
+cd ..; npx tsc --noEmit   # passed
+npm run build             # passed
+cd sidecar; node --check src/index.js  # passed
+```
+
+**评审**：dev-reviewer 覆盖 wait_result 竞态（迟到结果）、重试耗尽丢成功记录、image_index 错位、废弃保留逻辑 → 均已修复并补测试。未做 GUI 点按（无新增界面，仅设置页输入钳制）。
 
 ### 2026-11-07（P1-2 账号管理补全）
 
