@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{Local, Utc};
 use serde::Deserialize;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
@@ -209,9 +209,20 @@ pub async fn task_list() -> Result<Vec<Task>, String> {
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/** 生成任务名：项目名-日期（本地日期，如：奶瓶收纳盒生图-2026-11-06） */
+fn make_task_name(project_name: &str) -> String {
+    let trimmed = project_name.trim();
+    let base = if trimmed.is_empty() { "任务" } else { trimmed };
+    format!("{}-{}", base, Local::now().format("%Y-%m-%d"))
+}
+
 #[tauri::command(rename_all = "snake_case")]
-pub async fn task_create(name: String, project_id: i64, account_id: i64) -> Result<Task, String> {
+pub async fn task_create(project_id: i64, account_id: i64) -> Result<Task, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
+    let project_name: String = conn
+        .query_row("SELECT name FROM projects WHERE id = ?1", [project_id], |row| row.get(0))
+        .map_err(|_| "项目不存在".to_string())?;
+    let name = make_task_name(&project_name);
     let now = Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO tasks (name, project_id, account_id, status, created_at, updated_at) VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
@@ -612,4 +623,22 @@ pub async fn execution_logs(limit: i64) -> Result<Vec<LogEntry>, String> {
         })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::make_task_name;
+
+    #[test]
+    fn make_task_name_uses_trimmed_project_and_date() {
+        let name = make_task_name("  奶瓶收纳盒生图  ");
+        assert!(name.starts_with("奶瓶收纳盒生图-"));
+        assert_eq!(name.chars().count(), "奶瓶收纳盒生图-".chars().count() + 10);
+    }
+
+    #[test]
+    fn make_task_name_empty_falls_back_to_default() {
+        let name = make_task_name("   ");
+        assert!(name.starts_with("任务-"));
+    }
 }

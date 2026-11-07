@@ -127,8 +127,8 @@ export async function taskList(): Promise<Task[]> {
   return invoke('task_list')
 }
 
-export async function taskCreate(name: string, project_id: number, account_id: number): Promise<Task> {
-  return invoke('task_create', { name, project_id, account_id })
+export async function taskCreate(project_id: number, account_id: number): Promise<Task> {
+  return invoke('task_create', { project_id, account_id })
 }
 
 export async function taskStart(id: number): Promise<void> {

@@ -235,10 +235,11 @@ ai-image-generate/
 | `account_delete` | 删除账号 | `id` | `Result` |
 | `account_reorder` | 调整顺序 | `ids` | `Result` |
 | `account_set_threshold` | 设置阈值 | `id, threshold` | `Result` |
-| `task_create` | 创建任务 | `name, project_id, account_id` | `Task` |
+| `task_create` | 创建任务 | `project_id, account_id`（任务名自动生成为“项目名-日期”） | `Task` |
 | `task_start` | 开始任务 | `id` | `Result` |
 | `task_pause` | 暂停任务 | `id` | `Result` |
 | `task_resume` | 继续任务 | `id` | `Result` |
+| `task_continue` | 人工干预后继续任务 | `id` | `Result` |
 | `task_cancel` | 取消任务 | `id` | `Result` |
 | `task_list` | 列出任务 | - | `Vec<Task>` |
 | `task_detail` | 任务详情 | `id` | `TaskDetail` |

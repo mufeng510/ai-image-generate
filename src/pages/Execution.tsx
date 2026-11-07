@@ -62,7 +62,6 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
   const [tasks, setTasks] = useState<Task[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
-  const [name, setName] = useState('')
   const [projectId, setProjectId] = useState('')
   const [accountId, setAccountId] = useState('')
   const [logs, setLogs] = useState<string[]>([])
@@ -134,14 +133,13 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
-    if (!name.trim() || !projectId || !accountId) {
-      alert('请填写任务名称并选择项目和账号')
+    if (!projectId || !accountId) {
+      alert('请选择项目和账号')
       return
     }
     setLoading(true)
     try {
-      await taskCreate(name.trim(), Number(projectId), Number(accountId))
-      setName('')
+      await taskCreate(Number(projectId), Number(accountId))
       setProjectId('')
       setAccountId('')
       await loadTasks()
@@ -183,12 +181,6 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
       </div>
 
       <form onSubmit={handleCreate} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-        <input
-          placeholder="任务名称（例如：奶瓶收纳盒生图 1）"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          style={{ flex: '1 1 220px', minWidth: '180px', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-        />
         <select
           value={projectId}
           onChange={(e) => setProjectId(e.target.value)}
