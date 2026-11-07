@@ -773,6 +773,91 @@ fn setting_enabled(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/** 读取字符串型应用设置；空串视为未设置 */
+fn setting_string(key: &str) -> Option<String> {
+    get_connection()
+        .ok()
+        .and_then(|conn| {
+            conn.query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                [key],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+        })
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/** 纯函数：项目覆盖 > 全局默认；全空为 None（便于单元测试） */
+fn merge_gen_params(
+    project_json: Option<&str>,
+    global_model: Option<String>,
+    global_ratio: Option<String>,
+    global_style: Option<String>,
+) -> Option<serde_json::Value> {
+    let mut model = global_model.unwrap_or_default();
+    let mut ratio = global_ratio.unwrap_or_default();
+    let mut style = global_style.unwrap_or_default();
+
+    if let Some(json) = project_json {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(json) {
+            if let Some(m) = value.get("model").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+                model = m;
+            }
+            if let Some(r) = value.get("ratio").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+                ratio = r;
+            }
+            if let Some(s) = value.get("style").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+                style = s;
+            }
+        }
+    }
+
+    let mut object = serde_json::Map::new();
+    if !model.is_empty() {
+        object.insert("model".into(), serde_json::Value::String(model));
+    }
+    if !ratio.is_empty() {
+        object.insert("ratio".into(), serde_json::Value::String(ratio));
+    }
+    if !style.is_empty() {
+        object.insert("style".into(), serde_json::Value::String(style));
+    }
+    if object.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(object))
+    }
+}
+
+/**
+ * 解析本轮有效的图像生成参数：项目级覆盖（projects.gen_params_json） > 全局默认（app_settings 的 gen_model/gen_ratio/gen_style）。
+ * 三者全部为空时返回 None；部分非空时返回含非空字段的对象。
+ */
+fn resolve_gen_params(project_id: i64) -> Option<serde_json::Value> {
+    let global_model = setting_string("gen_model");
+    let global_ratio = setting_string("gen_ratio");
+    let global_style = setting_string("gen_style");
+
+    let project_json: Option<String> = get_connection().ok().and_then(|conn| {
+        conn.query_row(
+            "SELECT gen_params_json FROM projects WHERE id = ?1",
+            [project_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+    });
+
+    merge_gen_params(
+        project_json.as_deref(),
+        global_model,
+        global_ratio,
+        global_style,
+    )
+}
+
 /** 默认执行模式：`step` 表示每轮完成后暂停，等待用户手动「继续执行」；其余为 `auto` */
 fn setting_execution_mode() -> String {
     get_connection()
@@ -1486,7 +1571,7 @@ async fn run_single_round(
         .filter_map(|v| v.get("path").and_then(|s| s.as_str()).map(|s| s.to_string()))
         .collect();
     let generate_request_id = new_request_id();
-    let gen_cmd = serde_json::json!({
+    let mut gen_cmd = serde_json::json!({
         "cmd": "generate_images",
         "task_id": tid,
         "request_id": generate_request_id,
@@ -1498,6 +1583,10 @@ async fn run_single_round(
         "trace": setting_enabled("playwright_trace"),
         "round_dir": output_dir.to_string_lossy(),
     });
+    if let Some(params) = resolve_gen_params(project_id) {
+        gen_cmd["gen_params"] = params;
+        gen_cmd["apply_gen_params"] = serde_json::Value::Bool(setting_enabled("gen_params_apply"));
+    }
     if let Err(e) = scheduler.send_sidecar_cmd(gen_cmd) {
         set_task_status(app, tid, "failed", &format!("发送生图命令失败: {}", e));
         return Err(());
@@ -2154,7 +2243,7 @@ async fn resume_selection_round(
 
     set_task_status(app, tid, "uploading", "人工确认完成：上传参考图片并提交生图");
     let generate_request_id = new_request_id();
-    let gen_cmd = serde_json::json!({
+    let mut gen_cmd = serde_json::json!({
         "cmd": "generate_images",
         "task_id": tid,
         "request_id": generate_request_id,
@@ -2166,6 +2255,10 @@ async fn resume_selection_round(
         "trace": setting_enabled("playwright_trace"),
         "round_dir": output_dir.clone().unwrap_or_default(),
     });
+    if let Some(params) = resolve_gen_params(project_id) {
+        gen_cmd["gen_params"] = params;
+        gen_cmd["apply_gen_params"] = serde_json::Value::Bool(setting_enabled("gen_params_apply"));
+    }
     scheduler.send_sidecar_cmd(gen_cmd)?;
     set_task_status(app, tid, "submitting", "已提交，等待生成完成");
     let gen_res = match wait_result(event_rx, "generate_images", &generate_request_id, 300, scheduler, tid).await {
@@ -2417,6 +2510,56 @@ mod tests {
         assert_eq!(still.len(), 1);
         assert_eq!(still[0]["url"], "b");
         assert_eq!(merged.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_gen_params_project_only() {
+        let merged = merge_gen_params(
+            Some(r#"{"model":"Seedream 5.0 Pro"}"#),
+            Some("Seedream 4.5".to_string()),
+            Some("1:1".to_string()),
+            Some("油画".to_string()),
+        )
+        .expect("should produce params");
+        assert_eq!(merged.get("model").and_then(|v| v.as_str()), Some("Seedream 5.0 Pro"));
+        assert_eq!(merged.get("ratio").and_then(|v| v.as_str()), Some("1:1"));
+        assert_eq!(merged.get("style").and_then(|v| v.as_str()), Some("油画"));
+    }
+
+    #[test]
+    fn test_merge_gen_params_project_overrides_global() {
+        let merged = merge_gen_params(
+            Some(r#"{"model":"Seedream 5.0 Pro","ratio":"16:9"}"#),
+            Some("Seedream 4.0".to_string()),
+            Some("9:16".to_string()),
+            Some("水墨画".to_string()),
+        )
+        .expect("should produce params");
+        assert_eq!(merged.get("model").and_then(|v| v.as_str()), Some("Seedream 5.0 Pro"));
+        assert_eq!(merged.get("ratio").and_then(|v| v.as_str()), Some("16:9"));
+        assert_eq!(merged.get("style").and_then(|v| v.as_str()), Some("水墨画"));
+    }
+
+    #[test]
+    fn test_merge_gen_params_empty_returns_none() {
+        assert!(merge_gen_params(None, None, None, None).is_none());
+    }
+
+    #[test]
+    fn test_merge_gen_params_ignores_bad_json() {
+        assert!(merge_gen_params(Some("not json"), None, None, None).is_none());
+    }
+
+    #[test]
+    fn test_merge_gen_params_trims_project_values() {
+        let merged = merge_gen_params(
+            Some(r#"{"model":"  Seedream 4.5  "}"#),
+            Some("Seedream 5.0 Flash".to_string()),
+            None,
+            None,
+        )
+        .expect("params should be produced");
+        assert_eq!(merged.get("model").and_then(|v| v.as_str()), Some("Seedream 4.5"));
     }
 
     #[test]

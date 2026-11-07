@@ -113,6 +113,34 @@ export interface Setting {
   value: string
 }
 
+export interface GenParams {
+  model?: string | null
+  ratio?: string | null
+  style?: string | null
+}
+
+export const GEN_MODEL_OPTIONS = [
+  'Seedream 5.0 Pro',
+  'Seedream 5.0 Flash',
+  'Seedream 4.5',
+  'Seedream 4.0',
+] as const
+export const GEN_RATIO_OPTIONS = [
+  '自动',
+  '9:16',
+  '2:3',
+  '3:4',
+  '1:1',
+  '4:3',
+  '3:2',
+  '16:9',
+] as const
+export const GEN_STYLE_OPTIONS = [
+  '人像摄影', '电影写真', '中国风', '动漫', '3D渲染', '赛博朋克', 'CG 动画', '水墨画', '油画', '古典', '水彩画', '卡通',
+  '平面插画', '风景', '港风动漫', '像素风格', '荧光绘画', '彩铅画', '手办', '儿童绘画', '抽象', '锐笔插画', '二次元',
+  '油墨印刷', '版画', '莫奈', '毕加索', '伦勃朗', '马蒂斯', '巴洛克', '复古动漫', '绘本',
+] as const
+
 export interface DashboardStats {
   total_projects: number
   total_accounts: number
@@ -166,6 +194,14 @@ export async function projectCreate(name: string, root_path: string): Promise<Pr
 
 export async function projectDelete(id: number): Promise<void> {
   return invoke('project_delete', { id })
+}
+
+export async function projectGenParamsGet(id: number): Promise<GenParams> {
+  return invoke('project_gen_params_get', { id })
+}
+
+export async function projectGenParamsSet(id: number, params: GenParams): Promise<GenParams> {
+  return invoke('project_gen_params_set', { id, params })
 }
 
 export async function projectImport(name: string | null, root_path: string): Promise<Project> {

@@ -27,6 +27,8 @@ fn main() {
             commands::project_open_folder,
             commands::project_prompt_get,
             commands::project_prompt_set,
+            commands::project_gen_params_get,
+            commands::project_gen_params_set,
             commands::project_reference_stats,
             commands::project_task_history,
             commands::project_ref_list,

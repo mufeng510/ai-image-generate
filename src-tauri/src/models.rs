@@ -6,8 +6,17 @@ pub struct Project {
     pub name: String,
     pub root_path: String,
     pub prompt_path: Option<String>,
+    pub gen_params_json: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+}
+
+/// 图像生成参数（仅允许经真实网页验证的枚举值）
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+pub struct GenParams {
+    pub model: Option<String>,
+    pub ratio: Option<String>,
+    pub style: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

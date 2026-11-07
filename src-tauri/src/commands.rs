@@ -49,7 +49,7 @@ async fn manager_ensure_sidecar(app: &AppHandle, scheduler: &Scheduler) -> Resul
 pub async fn project_list() -> Result<Vec<Project>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, name, root_path, prompt_path, created_at, updated_at FROM projects ORDER BY created_at DESC")
+        .prepare("SELECT id, name, root_path, prompt_path, gen_params_json, created_at, updated_at FROM projects ORDER BY created_at DESC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -58,8 +58,9 @@ pub async fn project_list() -> Result<Vec<Project>, String> {
                 name: row.get(1)?,
                 root_path: row.get(2)?,
                 prompt_path: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
+                gen_params_json: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -85,6 +86,7 @@ pub async fn project_create(name: String, root_path: String) -> Result<Project, 
         name,
         root_path,
         prompt_path: None,
+        gen_params_json: None,
         created_at: Some(now.clone()),
         updated_at: Some(now),
     })
@@ -180,6 +182,7 @@ pub async fn project_import(name: Option<String>, root_path: String) -> Result<P
         name: project_name,
         root_path: root_str,
         prompt_path,
+        gen_params_json: None,
         created_at: Some(now.clone()),
         updated_at: Some(now),
     })
@@ -277,6 +280,35 @@ pub async fn project_prompt_get(id: i64) -> Result<String, String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub async fn project_gen_params_get(id: i64) -> Result<crate::models::GenParams, String> {
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let json: Option<String> = conn
+        .query_row("SELECT gen_params_json FROM projects WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .map_err(|_| "项目不存在".to_string())?;
+    Ok(persisted_gen_params(json))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_gen_params_set(id: i64, params: crate::models::GenParams) -> Result<crate::models::GenParams, String> {
+    let validated = validate_gen_params(&params)?;
+    let json = serde_json::to_string(&validated).map_err(|e| e.to_string())?;
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    let affected = conn
+        .execute(
+            "UPDATE projects SET gen_params_json = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![json, now, id],
+        )
+        .map_err(|e| e.to_string())?;
+    if affected == 0 {
+        return Err("项目不存在".to_string());
+    }
+    Ok(validated)
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub async fn project_prompt_set(id: i64, content: String) -> Result<(), String> {
     let root = project_root_by_id(id)?;
     std::fs::create_dir_all(&root).map_err(|e| format!("创建项目目录失败：{}", e))?;
@@ -293,7 +325,68 @@ pub async fn project_prompt_set(id: i64, content: String) -> Result<(), String> 
     Ok(())
 }
 
-/** 与 sidecar/scanner.js 一致：jpg/jpeg/png/webp */
+/** 图像生成参数合法值（经真实 Doubao 页面验证） */
+pub const GEN_MODELS: &[&str] = &[
+    "Seedream 5.0 Pro",
+    "Seedream 5.0 Flash",
+    "Seedream 4.5",
+    "Seedream 4.0",
+];
+pub const GEN_RATIOS: &[&str] = &[
+    "自动", "9:16", "2:3", "3:4", "1:1", "4:3", "3:2", "16:9",
+];
+pub const GEN_STYLES: &[&str] = &[
+    "人像摄影", "电影写真", "中国风", "动漫", "3D渲染", "赛博朋克", "CG 动画", "水墨画", "油画", "古典", "水彩画", "卡通",
+    "平面插画", "风景", "港风动漫", "像素风格", "荧光绘画", "彩铅画", "手办", "儿童绘画", "抽象", "锐笔插画", "二次元",
+    "油墨印刷", "版画", "莫奈", "毕加索", "伦勃朗", "马蒂斯", "巴洛克", "复古动漫", "绘本",
+];
+
+fn validate_gen_params(p: &crate::models::GenParams) -> Result<crate::models::GenParams, String> {
+    let ok = |v: &Option<String>, allow: &[&str], name: &str| -> Result<Option<String>, String> {
+        match v {
+            Some(s) => {
+                let s = s.trim();
+                if s.is_empty() {
+                    Ok(None)
+                } else if allow.contains(&s) {
+                    Ok(Some(s.to_string()))
+                } else {
+                    Err(format!("{} 值 `{}` 不在已验证的枚举列表中", name, s))
+                }
+            }
+            None => Ok(None),
+        }
+    };
+    Ok(crate::models::GenParams {
+        model: ok(&p.model, GEN_MODELS, "模型")?,
+        ratio: ok(&p.ratio, GEN_RATIOS, "比例")?,
+        style: ok(&p.style, GEN_STYLES, "风格")?,
+    })
+}
+
+fn persisted_gen_params(json: Option<String>) -> crate::models::GenParams {
+    #[derive(Deserialize)]
+    struct GenParamsWire {
+        model: Option<String>,
+        ratio: Option<String>,
+        style: Option<String>,
+    }
+    match json.ok_or(())
+        .and_then(|s| serde_json::from_str::<GenParamsWire>(&s).map_err(|_| ()))
+    {
+        Ok(w) => crate::models::GenParams {
+            model: w.model,
+            ratio: w.ratio,
+            style: w.style,
+        },
+        Err(_) => crate::models::GenParams {
+            model: None,
+            ratio: None,
+            style: None,
+        },
+    }
+}
+
 fn is_supported_image(path: &std::path::Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
         Some(ext) => {
@@ -945,6 +1038,47 @@ mod project_tests {
         assert_eq!(order, vec![2, 1]);
         // 不存在的 id 被拒绝
         assert!(apply_reorder(&conn, &[2, 999]).is_err());
+    }
+
+    #[test]
+    fn validate_gen_params_rejects_unknown_values() {
+        use crate::models::GenParams;
+        let bad = GenParams {
+            model: Some("Seedream 99 Pro".to_string()),
+            ratio: None,
+            style: None,
+        };
+        assert!(validate_gen_params(&bad).is_err());
+
+        let bad2 = GenParams {
+            model: Some("Seedream 5.0 Flash".to_string()),
+            ratio: Some("5:7".to_string()),
+            style: None,
+        };
+        assert!(validate_gen_params(&bad2).is_err());
+
+        let ok = GenParams {
+            model: Some("Seedream 5.0 Flash".to_string()),
+            ratio: Some("1:1".to_string()),
+            style: Some("油画".to_string()),
+        };
+        let v = validate_gen_params(&ok).expect("valid params should pass");
+        assert_eq!(v.model.as_deref(), Some("Seedream 5.0 Flash"));
+        assert_eq!(v.ratio.as_deref(), Some("1:1"));
+        assert_eq!(v.style.as_deref(), Some("油画"));
+    }
+
+    #[test]
+    fn validate_gen_params_empty_is_treated_as_unset() {
+        use crate::models::GenParams;
+        let p = GenParams {
+            model: Some("".to_string()),
+            ratio: None,
+            style: Some("".to_string()),
+        };
+        let v = validate_gen_params(&p).expect("empty fields should be allowed");
+        assert!(v.model.is_none());
+        assert!(v.style.is_none());
     }
 
     #[test]
@@ -1729,15 +1863,16 @@ pub async fn account_get(id: i64) -> Result<Option<Account>, String> {
 #[tauri::command(rename_all = "snake_case")]
 pub async fn project_get(id: i64) -> Result<Option<Project>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, name, root_path, prompt_path, created_at, updated_at FROM projects WHERE id = ?1").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, name, root_path, prompt_path, gen_params_json, created_at, updated_at FROM projects WHERE id = ?1").map_err(|e| e.to_string())?;
     let row = stmt.query_row([id], |row| {
         Ok(Project {
             id: row.get(0)?,
             name: row.get(1)?,
             root_path: row.get(2)?,
             prompt_path: row.get(3)?,
-            created_at: row.get(4)?,
-            updated_at: row.get(5)?,
+            gen_params_json: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
         })
     });
     match row {

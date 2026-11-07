@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { settingsGet, settingsSet } from '@/hooks/api'
+import { settingsGet, settingsSet, GEN_MODEL_OPTIONS, GEN_RATIO_OPTIONS, GEN_STYLE_OPTIONS } from '@/hooks/api'
 import { useI18n } from '@/i18n'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification'
@@ -17,6 +17,10 @@ export default function SettingsPage() {
   const [notifyEnabled, setNotifyEnabled] = useState(false)
   const [executionMode, setExecutionMode] = useState<'auto' | 'step'>('auto')
   const [version, setVersion] = useState('')
+  const [genModel, setGenModel] = useState('')
+  const [genRatio, setGenRatio] = useState('')
+  const [genStyle, setGenStyle] = useState('')
+  const [genApply, setGenApply] = useState(false)
   const [playwrightTrace, setPlaywrightTrace] = useState(false)
 
   async function load() {
@@ -34,6 +38,10 @@ export default function SettingsPage() {
     setExecutionMode(em === 'step' ? 'step' : 'auto')
     const pt = await settingsGet('playwright_trace')
     setPlaywrightTrace(pt === 'true')
+    const gm = await settingsGet('gen_model'); if (gm != null) setGenModel(gm)
+    const gr = await settingsGet('gen_ratio'); if (gr != null) setGenRatio(gr)
+    const gs = await settingsGet('gen_style'); if (gs != null) setGenStyle(gs)
+    const ga = await settingsGet('gen_params_apply'); setGenApply(ga === 'true')
     getVersion().then(setVersion).catch(() => setVersion('unknown'))
   }
 
@@ -94,6 +102,26 @@ export default function SettingsPage() {
     }
   }
 
+  async function saveGenParamsGlobal() {
+    try {
+      await settingsSet('gen_model', genModel.trim())
+      await settingsSet('gen_ratio', genRatio.trim())
+      await settingsSet('gen_style', genStyle.trim())
+      alert(t('settings.saveSuccess'))
+    } catch (e) {
+      alert(t('settings.genParamsSaveFailed') + e)
+    }
+  }
+
+  async function toggleGenApply(value: boolean) {
+    try {
+      await settingsSet('gen_params_apply', value ? 'true' : 'false')
+      setGenApply(value)
+    } catch (e) {
+      alert(t('settings.saveFailed') + e)
+    }
+  }
+
   async function toggleNotify(value: boolean) {
     if (!value) {
       try {
@@ -131,6 +159,29 @@ export default function SettingsPage() {
             onChange={(e) => setProjectRoot(e.target.value)}
             style={{ width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
           />
+        </div>
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.genParamsGlobal')}</label>
+          <p style={{ fontSize: '12px', color: '#9ca3af', margin: '0 0 8px' }}>{t('settings.genParamsNote')}</p>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <select value={genModel} onChange={(e) => setGenModel(e.target.value)} style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+              <option value="">（{t('settings.genParamsModel')}）</option>
+              {GEN_MODEL_OPTIONS.map((m) => (<option key={m} value={m}>{m}</option>))}
+            </select>
+            <select value={genRatio} onChange={(e) => setGenRatio(e.target.value)} style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+              <option value="">（{t('settings.genParamsRatio')}）</option>
+              {GEN_RATIO_OPTIONS.map((r) => (<option key={r} value={r}>{r}</option>))}
+            </select>
+            <select value={genStyle} onChange={(e) => setGenStyle(e.target.value)} style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+              <option value="">（{t('settings.genParamsStyle')}）</option>
+              {GEN_STYLE_OPTIONS.map((s) => (<option key={s} value={s}>{s}</option>))}
+            </select>
+            <button onClick={saveGenParamsGlobal} style={{ padding: '8px 14px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>{t('btn.save')}</button>
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px', fontSize: '13px', cursor: 'pointer' }}>
+            <input type="checkbox" checked={genApply} onChange={(e) => toggleGenApply(e.target.checked)} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
+            {t('settings.genParamsApply')}
+          </label>
         </div>
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.maxRetries')}</label>

@@ -19,11 +19,17 @@ import {
   projectRefDetail,
   projectRefReveal,
   projectRefOpen,
+  projectGenParamsGet,
+  projectGenParamsSet,
+  GEN_MODEL_OPTIONS,
+  GEN_RATIO_OPTIONS,
+  GEN_STYLE_OPTIONS,
   type Project,
   type ProjectReferenceStats,
   type ProjectHistoryItem,
   type ReferenceItem,
   type ReferenceDetail,
+  type GenParams,
 } from '@/hooks/api'
 import { useI18n } from '@/i18n'
 import { useTaskStatusLabels } from '@/utils/taskStatus'
@@ -106,6 +112,8 @@ export default function ProjectsPage() {
 
   const [preview, setPreview] = useState<{ item: ReferenceItem; projectId: number } | null>(null)
   const [detail, setDetail] = useState<ReferenceDetail | null>(null)
+
+  const [genParamsEditor, setGenParamsEditor] = useState<{ id: number; name: string; model: string; ratio: string; style: string } | null>(null)
 
   useEffect(() => {
     load()
@@ -291,6 +299,30 @@ export default function ProjectsPage() {
     }
   }
 
+  async function handleOpenGenParams(p: Project) {
+    try {
+      const g: GenParams = await projectGenParamsGet(p.id!)
+      setGenParamsEditor({ id: p.id!, name: p.name, model: g.model ?? '', ratio: g.ratio ?? '', style: g.style ?? '' })
+    } catch (e) {
+      alert(t('projects.paramsFailed') + e)
+    }
+  }
+
+  async function handleSaveGenParams() {
+    if (!genParamsEditor) return
+    try {
+      await projectGenParamsSet(genParamsEditor.id, {
+        model: genParamsEditor.model.trim() || null,
+        ratio: genParamsEditor.ratio.trim() || null,
+        style: genParamsEditor.style.trim() || null,
+      })
+      alert(t('settings.saveSuccess'))
+      setGenParamsEditor(null)
+    } catch (e) {
+      alert(t('projects.paramsSaveFailed') + e)
+    }
+  }
+
   async function handleOpenPrompt(p: Project) {
     try {
       const text = await projectPromptGet(p.id!)
@@ -397,6 +429,9 @@ export default function ProjectsPage() {
                     </button>
                   </td>
                   <td style={{ padding: '12px', whiteSpace: 'nowrap' }}>
+                    <button onClick={() => handleOpenGenParams(p)} style={actionStyle}>
+                      {t('projects.params')}
+                    </button>
                     <button onClick={() => handleOpenPrompt(p)} style={actionStyle}>
                       {t('btn.prompt')}
                     </button>
@@ -552,6 +587,42 @@ export default function ProjectsPage() {
               <button onClick={() => setHistory(null)} style={{ ...actionStyle, marginRight: 0, padding: '8px 16px' }}>
                 {t('common.close')}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {genParamsEditor && (
+        <div style={modalOverlay} onClick={() => setGenParamsEditor(null)}>
+          <div style={{ ...modalCard, width: 'min(520px, 94vw)' }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '8px' }}>{t('projects.paramsModalTitle', { name: genParamsEditor.name })}</h3>
+            <p style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '12px' }}>{t('projects.paramsModalNote')}</p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <label style={{ fontSize: '13px', color: '#6b7280' }}>
+                {t('settings.genParamsModel')}
+                <select value={genParamsEditor.model} onChange={(e) => setGenParamsEditor({ ...genParamsEditor, model: e.target.value })} style={{ display: 'block', width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px', marginTop: '4px' }}>
+                  <option value="">（沿用全局）</option>
+                  {GEN_MODEL_OPTIONS.map((m) => (<option key={m} value={m}>{m}</option>))}
+                </select>
+              </label>
+              <label style={{ fontSize: '13px', color: '#6b7280' }}>
+                {t('settings.genParamsRatio')}
+                <select value={genParamsEditor.ratio} onChange={(e) => setGenParamsEditor({ ...genParamsEditor, ratio: e.target.value })} style={{ display: 'block', width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px', marginTop: '4px' }}>
+                  <option value="">（沿用全局）</option>
+                  {GEN_RATIO_OPTIONS.map((r) => (<option key={r} value={r}>{r}</option>))}
+                </select>
+              </label>
+              <label style={{ fontSize: '13px', color: '#6b7280' }}>
+                {t('settings.genParamsStyle')}
+                <select value={genParamsEditor.style} onChange={(e) => setGenParamsEditor({ ...genParamsEditor, style: e.target.value })} style={{ display: 'block', width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px', marginTop: '4px' }}>
+                  <option value="">（沿用全局）</option>
+                  {GEN_STYLE_OPTIONS.map((s) => (<option key={s} value={s}>{s}</option>))}
+                </select>
+              </label>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '14px' }}>
+              <button onClick={() => setGenParamsEditor(null)} style={{ ...actionStyle, marginRight: 0, padding: '8px 16px' }}>{t('common.cancel')}</button>
+              <button onClick={handleSaveGenParams} style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>{t('btn.save')}</button>
             </div>
           </div>
         </div>

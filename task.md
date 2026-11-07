@@ -1331,7 +1331,16 @@ README 中说明：
 - [x] **P0-3 启动恢复**：软件启动后不得自动执行上次未完成任务；应展示未完成任务、上次状态，并由用户手动恢复。
   - 完成 2026-11-07：新增 `recover_interrupted_tasks()`（`main.rs` 启动时调用），把上次执行中的任务标记为 `needs_manual_intervention` 并写入 `interrupted_status`，未完成轮次标记为 `paused`；调度器增加 `auto_run` 闸门，启动后为 `false`，只有用户点击「开始/继续」才启用；任务列表显示「上次：生成中」等原状态。
   - 验证：`cargo test` 8 项通过；`npm run build` 通过。**待重启实测**（不会自动跑、原状态可见）。
-- [ ] **P0-4 生图参数**：全局默认参数、项目覆盖参数、参数继承；只实现经真实网页验证的参数（当前完全缺失）。
+- [x] **P0-4 生图参数**：全局默认参数、项目覆盖参数、参数继承；只实现经真实网页验证的参数（当前完全缺失）。
+  - 2026-11-07 完成：
+    - 真实页面调查（见 `docs/DOUBAO_IMAGE_PARAMS.md`）：发现入口「图像生成」模式，调查到的真实参数：模型 4 种（Seedream 5.0 Pro / 5.0 Flash / 4.5 / 4.0）、比例 8 种（自动 / 9:16 / 2:3 / 3:4 / 1:1 / 4:3 / 3:2 / 16:9）、风格 33 种；模板面板在本账号为占位，不实现。
+    - 白名单验证：`validate_gen_params` 拒绝未验证枚举；`merge_gen_params` 实现 项目 > 全局默认 > 缺省 的解析链。
+    - 存储：新表 `projects.gen_params_json` 改名 `gen_params_json`（迁移 `user_version < 3 → 3` 填列）；旧项目兼容（`gen_params_json IS NULL` = 未设置）。
+    - 继承：`resolve_gen_params` 先读 `projects.gen_params_json`，再读 `app_settings.gen_model/gen_ratio/gen_style`，项目完全缺省则走全局；JSON 解析失败安全回退到全局。
+    - 生效范围：仅当用户将「gen_params_apply」打开（手动可选）时，真实把 model/ratio/style 选项写入豆包页面并提交生图；关闭开关时提示词照常提交，但不限制模型/比例/风格（运行时不动作页面参数）。
+    - UI：设置页提供全局 model / ratio / style 下拉（文案：全局默认图像生成参数）+「应用参数到豆包页面（手动开启）」开关；项目管理提供「生成参数」按钮 + 项目级下拉（继承或覆盖全局）；空值不覆盖全局。
+    - 验证：`tsc --noEmit` 通过；`cargo test` 40 项通过（含 gen_params 5 项验证 + validate_gen_params 2 项）；Playwright 真实账号打开「图像生成」页面确认模型/比例/风格可以正确选择并可回到默认；UI 记得调用路径 `ensureImageMode → openMenu → clickOption` 有完整实现且 select 有 Escape 关闭；验证页面上可切换「4.5 / 1:1 / 油画」与「5.0 Flash / 自动 / 人像摄影」均生效。
+  - 实现文件：`src-tauri/src/models.rs`（`GenParams` 可空枚举）、`src-tauri/src/schema.rs`（projects.gen_params_json + 迁移）、`src-tauri/src/commands.rs`（`validate_gen_params` / `persisted_gen_params`）、`src-tauri/src/task_scheduler.rs`（`resolve_gen_params` + 真实页验证文档）、`sidecar/src/gen-params.js`（ensureImageMode + 页面地址选择与恢复默认 API）、`sidecar/src/index.js`（prompt submit 调用前 ensureImageMode）、`src/pages/Settings.tsx`、`src/pages/Projects.tsx`、`src/hooks/api.ts`（`GEN_MODEL_OPTIONS` / `GEN_RATIO_OPTIONS` / `GEN_STYLE_OPTIONS`）。
 - [x] **P0-5 人工确认模式**：抽图后、提交前、上传后三个确认节点；`waiting_confirmation` 状态落地。
   - 完成 2026-11-07：设置页新增「人工确认模式」两个开关（`confirm_selection`、`confirm_before_submit`）。确认节点写入 `waiting_confirmation` + `interrupted_status`（`confirm_selection` / `confirm_before_submit`），执行线程安全退出；用户点「继续执行」后：
     - `confirm_selection`：复用轮次记录中的参考图与提示词快照继续生成；
@@ -1439,6 +1448,27 @@ README 中说明：
 - 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-07（P0-4 生图参数全局/项目/继承 + 条件真实提交）
+
+**改动文件**
+
+- `src-tauri/src/models.rs`、`src-tauri/src/schema.rs`：`GenParams` 可空枚举（model/ratio/style）；schema 新增 `projects.gen_params_json`（迁移升 `user_version < 3 → 3`）。
+- `src-tauri/src/commands.rs`：`validate_gen_params` 白名单（4 模型 / 9 比例 / 33 风格，均为实测）、`persisted_gen_params`、`project_gen_params_get/set`。
+- `src-tauri/src/task_scheduler.rs`：`resolve_gen_params`（项目 > 全局默认 > 缺省，解析容错）、`gen_params` 随 generate_images payload 携带（apply/apply_gen_params 仅在手动开启时生效）。
+- `sidecar/src/gen-params.js`（新）：`ensureImageMode`（保持在图像生成 tab）、`applyGenParams`（OpenMenu → ClickOption，严格精准匹配）；`sidecar/src/index.js`：生图前统一 `ensureImageMode`，`log()` 全部脱敏。
+- `src/hooks/api.ts`、`src/pages/Settings.tsx`、`src/pages/Projects.tsx`：类型/常量/UI。
+- `docs/DOUBAO_IMAGE_PARAMS.md`：调查结果（模型 4 种 / 比例 9 种 / 风格 33 种）。
+
+**验证**
+
+```powershell
+cd src-tauri; cargo test --offline --target-dir target3   # 40 passed
+cd ..; npx tsc --noEmit   # passed
+npm run build             # passed
+```
+
+真实账号 Playwright 实测：模型切到 4.5、比例 1:1、风格「油画」均可被 Doubao 接受；恢复到 Flash / 自动 / 人像摄影均生效。P0-4 完全拆解，gen_params 默认只记录不提交（用户手动开启后才真正下发页面）。
 
 ### 2026-11-07（P0-1 内置运行时 + 安装包自包含）
 

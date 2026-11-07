@@ -30,6 +30,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const genParams = require(path.join(__dirname, 'gen-params.js'));
 const { chromium } = require('playwright');
 
 const { scanFolders } = require('./scanner');
@@ -722,6 +723,15 @@ async function generateImagesInner(cmd) {
   }
   await page.waitForTimeout(3000);
   await dismissPageOverlays(page);
+
+  // 进入页面后应用图像生成参数（确保处在图像生成模式 + 设置模型/比例/风格）
+  if (cmd.apply_gen_params && cmd.gen_params) {
+    try {
+      await genParams.applyGenParams(page, cmd.gen_params, (level, msg) => log(level, msg));
+    } catch (err) {
+      log('warn', `应用图像生成参数失败: ${err && err.message ? err.message : String(err)}`);
+    }
+  }
 
   // 登录检查：页面若提示登录，交人工处理
   const pageText = await page.locator('body').innerText().catch(() => '');

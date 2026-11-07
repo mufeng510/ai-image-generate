@@ -8,6 +8,7 @@ pub fn create_tables(conn: &Connection) -> Result<(), Box<dyn std::error::Error>
             name TEXT NOT NULL,
             root_path TEXT NOT NULL,
             prompt_path TEXT,
+            gen_params_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -151,6 +152,7 @@ fn migrate_inner(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     ensure_column(conn, "tasks", "interrupted_status", "TEXT")?;
     ensure_column(conn, "task_rounds", "output_dir", "TEXT")?;
     ensure_column(conn, "accounts", "order_index", "INTEGER")?;
+    ensure_column(conn, "projects", "gen_params_json", "TEXT")?;
     // 旧账号按 id（插入顺序）回填 order_index
     conn.execute(
         "UPDATE accounts SET order_index = id WHERE order_index IS NULL",
@@ -221,6 +223,7 @@ mod tests {
             CREATE TABLE tasks (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
             CREATE TABLE task_rounds (id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL);
             CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+            CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
             "#,
         )
         .unwrap();
@@ -261,6 +264,7 @@ mod tests {
         assert!(columns(&conn, "tasks").contains(&"interrupted_status".to_string()));
         assert!(columns(&conn, "task_rounds").contains(&"output_dir".to_string()));
         assert!(columns(&conn, "accounts").contains(&"order_index".to_string()));
+        assert!(columns(&conn, "projects").contains(&"gen_params_json".to_string()));
         assert_eq!(user_version(&conn), 3);
     }
 }
