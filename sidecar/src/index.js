@@ -83,7 +83,27 @@ function emit(obj) {
 /** 发送日志事件（脱敏，不输出敏感信息） */
 function log(level, message) {
   if (LOG_LEVELS.indexOf(level) < 0) level = 'info';
-  emit({ type: 'log', level, message, timestamp: new Date().toISOString() });
+  emit({ type: 'log', level, message: redact(String(message)), timestamp: new Date().toISOString() });
+}
+
+/** 日志脱敏：去掉 Cookie/Authorization/Token/CSRF/会话类字段的值，保留键名与结构 */
+function redact(text) {
+  if (typeof text !== 'string' || !text) return text;
+  let out = text;
+  // JSON 场景："key":"value"，key 为敏感名时抹掉 value
+  out = out.replace(
+    /(["']?(cookie|set-cookie|authorization|proxy-authorization|x-api-key|x-csrf-token|csrf[-_]token|access_token|refresh_token|id_token|token|session_id|sessionid|sid|jsessionid|api[-_]?key|secret|password|pwd)["']?\s*:\s*)("[^"]*"|'[^']*'|[^,"}\s]*)/gi,
+    (_m, prefix, _q, val) => {
+      const quote = val.startsWith('"') ? '"' : val.startsWith("'") ? "'" : '';
+      return `${prefix}${quote}[REDACTED]${quote}`;
+    }
+  );
+  // 键=值 场景：cookie=...; token=...;
+  out = out.replace(
+    /\b(cookie|set-cookie|authorization|proxy-authorization|x-api-key|csrf[-_]token|access_token|refresh_token|id_token|token|session_id|sessionid|sid|api[-_]?key|secret|password|pwd)\s*=\s*[^;\s,]*/gi,
+    (_m, key) => `${key}=[REDACTED]`
+  );
+  return out;
 }
 
 /** 确保目录存在 */
@@ -444,6 +464,12 @@ async function probeAndExtract(cmd) {
     try {
       await page.screenshot({ path: path.join(diagDir, `extract_${stamp}.png`), fullPage: false });
       fs.writeFileSync(path.join(diagDir, `extract_${stamp}.html`), await page.content(), 'utf-8');
+      // 保存页面 URL 与标签，便于事后定位失败页（例如被跳到登录页/风控页）
+      fs.writeFileSync(
+        path.join(diagDir, `extract_${stamp}.json`),
+        JSON.stringify({ tag: 'extract', url: page.url(), timestamp: new Date().toISOString() }, null, 2),
+        'utf-8'
+      );
       log('info', `诊断信息已保存: ${diagDir}`);
     } catch (err) {
       log('warn', `保存诊断信息失败: ${err.message}`);
@@ -620,7 +646,41 @@ async function resumeGenerate(cmd) {
  *   - 状态不明绝不重试提交：本命令只提交一次；
  *   - 登录失效/验证码/网页结构变化 → ok:false + reason，等待人工干预。
  */
+/** generate_images：可选 Playwright Trace（每轮结束后保存 trace.zip，仅调试用途） */
 async function generateImages(cmd) {
+  const projectRoot = path.resolve(cmd.project_root || '.');
+  const roundDir = cmd.round_dir ? path.resolve(cmd.round_dir) : null;
+  const destDir = roundDir || path.join(projectRoot, 'output');
+  const traceOn = !!cmd.trace;
+  const accountId = cmd.account_id;
+  const ctx = contexts.get(accountId);
+  let traceStarted = false;
+  if (traceOn && ctx) {
+    try {
+      ensureDir(destDir);
+      await ctx.context.tracing.start({ screenshots: true, snapshots: true, sources: false });
+      traceStarted = true;
+      log('info', 'Playwright Trace 已开始记录（本轮结束后保存 trace.zip）');
+    } catch (err) {
+      log('warn', `Trace 启动失败: ${err.message}`);
+    }
+  }
+  try {
+    return await generateImagesInner(cmd);
+  } finally {
+    if (traceStarted && ctx) {
+      try {
+        const tracePath = path.join(destDir, 'trace.zip');
+        await ctx.context.tracing.stop({ path: tracePath });
+        log('info', `Playwright Trace 已保存: ${tracePath}`);
+      } catch (err) {
+        log('warn', `Trace 保存失败: ${err.message}`);
+      }
+    }
+  }
+}
+
+async function generateImagesInner(cmd) {
   const accountId = cmd.account_id;
   const ctx = contexts.get(accountId);
   if (!ctx) {
@@ -636,6 +696,11 @@ async function generateImages(cmd) {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       await page.screenshot({ path: path.join(diagDir, `${tag}_${stamp}.png`), fullPage: false });
       fs.writeFileSync(path.join(diagDir, `${tag}_${stamp}.html`), await page.content(), 'utf-8');
+      fs.writeFileSync(
+        path.join(diagDir, `${tag}_${stamp}.json`),
+        JSON.stringify({ tag, url: page.url(), timestamp: new Date().toISOString() }, null, 2),
+        'utf-8'
+      );
       log('info', `诊断信息已保存: ${diagDir}\\${tag}_${stamp}.png`);
     } catch (err) {
       log('warn', `保存诊断信息失败: ${err.message}`);

@@ -1383,7 +1383,15 @@ README 中说明：
   - 浏览器相关设置：未添加任何未经验证的浏览器选项（仅保留现有已验证的可见浏览器模式），避免破坏现有流程。
   - 全局默认生图参数：依赖 P0-4 的真实网页参数验证，本次不实现。
   - 验证：`cargo test` 33 项通过、`npx tsc --noEmit`、`npm run build`；GUI 实测中文与 English 两种语言的全部页面（仪表盘/项目/账号/任务队列/日志/设置），未发现 raw-key 泄漏；zh-CN 默认回退正常。
-- [ ] **P1-6 数据库与诊断**：数据库迁移版本机制、关键状态更新事务、Playwright Trace、失败时保存 URL/截图/脱敏日志。
+- [x] **P1-6 数据库与诊断**：数据库迁移版本机制、关键状态更新事务、Playwright Trace、失败时保存 URL/截图/脱敏日志。
+  - 完成 2026-11-07；
+    - **迁移机制**：schema 迁移为 IMMEDIATE 事务内整体执行；`user_version` 仅提升不回退（已有设置 3 = 引入 accounts.order_index 与 notifications 表）；迁移回填在事务内完成；迁移任务不存在时表均为 `CREATE TABLE IF NOT EXISTS`。
+    - **关键事务**：写 task_images（成功/失败记账）、task_rounds 状态更新、accounts.last_used_at 在单 `unchecked_transaction` 内执行，避免崩溃时出现半成品状态。
+    - **Playwright Trace**：设置页新增开关「启用 Playwright Trace」（`playwright_trace`）；打开时每轮 generate_images 记录 screenshot/snapshot（存 round 目录的 `trace.zip`，本代码路径仅在本轮调试使用；默认关闭）。
+    - **失败诊断**：抽图提取失败会保存截图 + 页面 HTML + 页面 URL（`extract_<stamp>.json`）；generate_images 阶段的 diag 也同步写入同一 `.json`（`tag`、`url`、`timestamp`），便于事后定位到登录页/风控页；
+    - **日志脱敏**：sidecar `log()` 输出前统一经 `redact()` 处理：JSON 值与 `k=v` 形式中 cookie/set-cookie/authorization/token/csrf/secret/password/api_key/session/sid/api_key/password/pwd 等字段的值都替换为 `[REDACTED]`。
+  - 验证：`cargo test` 33 项通过、`npx tsc --noEmit`、`npm run build`、`node --check src/index.js`。
+  - 未做：真实跑过一次开启 Trace 的生图任务（触发真实浏览器动作，需要用户许可后再验证；开启时仅影响调试，不影响正确性路径）。
 - [ ] **P1-7 测试矩阵**：补齐文件夹单元识别、随机抽取、补足、池耗尽重洗、输出命名、状态转换、参数继承、账号阈值等单元测试；增加可重复运行的集成测试与真实浏览器 E2E。
 
 ## 23.3 最终验收对照
@@ -1420,6 +1428,25 @@ README 中说明：
 - 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-07（P1-6 数据库与诊断）
+
+**改动文件**
+
+- `src-tauri/src/schema.rs`：迁移整体在 IMMEDIATE 事务内（`BEGIN IMMEDIATE` / 失败 ROLLBACK），`user_version` 只提升（`< 3` 才更新）。
+- `src-tauri/src/task_scheduler.rs`：verifying 块改用 `unchecked_transaction`（task_images 写入、task_rounds 更新、accounts.last_used_at、日志在同一事务）。
+- `sidecar/src/index.js`：新增 `redact()`（cookie/token/csrf/secret/password/api_key/session/sid 值抹掉为 `[REDACTED]`，应用于 `log()` 输出）；诊断失败场景额外写 `extract_<stamp>.json` / `<tag>_<stamp>.json`（含 `tag`、`url`、`timestamp`）；`generateImages` 拆分为 `generateImagesInner + generateImages` 包装，`cmd.trace=true` 时用 context.tracing.start/stop 记录并保存 `trace.zip` 到 round 目录（默认关闭）。
+- `src/pages/Settings.tsx`：新增「启用 Playwright Trace」开关（读写 `playwright_trace`，默认关闭）。
+- generate 命令增加 `trace`（settings）与 `round_dir` 透传。
+
+**验证**
+
+```powershell
+cd src-tauri; cargo test  # 33 passed
+cd ..; npx tsc --noEmit   # passed
+npm run build             # passed
+cd sidecar; node --check src/index.js  # passed
+```
 
 ### 2026-11-07（P1-5 国际化与设置）
 

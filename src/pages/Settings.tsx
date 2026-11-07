@@ -17,6 +17,7 @@ export default function SettingsPage() {
   const [notifyEnabled, setNotifyEnabled] = useState(false)
   const [executionMode, setExecutionMode] = useState<'auto' | 'step'>('auto')
   const [version, setVersion] = useState('')
+  const [playwrightTrace, setPlaywrightTrace] = useState(false)
 
   async function load() {
     const v = await settingsGet('project_root')
@@ -31,6 +32,8 @@ export default function SettingsPage() {
     setNotifyEnabled(ne === 'true')
     const em = await settingsGet('execution_mode')
     setExecutionMode(em === 'step' ? 'step' : 'auto')
+    const pt = await settingsGet('playwright_trace')
+    setPlaywrightTrace(pt === 'true')
     getVersion().then(setVersion).catch(() => setVersion('unknown'))
   }
 
@@ -185,6 +188,20 @@ export default function SettingsPage() {
               {t('settings.confirmBeforeSubmit')}
             </label>
           </div>
+        </div>
+        <div style={{ marginBottom: '16px' }}>
+          <p style={{ fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>
+            {t('settings.playwrightTraceNote')}
+          </p>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+            <input
+              type='checkbox'
+              checked={playwrightTrace}
+              onChange={(e) => toggleSetting('playwright_trace', e.target.checked, setPlaywrightTrace)}
+              style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+            />
+            {t('settings.playwrightTraceLabel')}
+          </label>
         </div>
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.executionMode')}</label>

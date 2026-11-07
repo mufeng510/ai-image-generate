@@ -1441,6 +1441,8 @@ async fn run_single_round(
         "refs": refs_paths,
         "prompt": prompt,
         "pause_before_submit": setting_enabled("confirm_before_submit"),
+        "trace": setting_enabled("playwright_trace"),
+        "round_dir": output_dir.to_string_lossy(),
     });
     if let Err(e) = scheduler.send_sidecar_cmd(gen_cmd) {
         set_task_status(app, tid, "failed", &format!("发送生图命令失败: {}", e));
@@ -1741,13 +1743,20 @@ async fn finish_after_generation(
         r.get("index").and_then(|v| v.as_i64()).unwrap_or(i64::MAX)
     });
 
-    // 7. verifying：写入图片记录、计算成功数
+    // 7. verifying：写入图片记录、计算成功数（单事务：未全部提交前没有任务能读到本轮半成品）
     let mut success_count = 0i64;
     {
         let conn = match get_connection() {
             Ok(c) => c,
             Err(e) => {
                 set_task_status(&app, tid, "failed", &format!("打开数据库失败: {}", e));
+                return None;
+            }
+        };
+        let tx = match conn.unchecked_transaction() {
+            Ok(t) => t,
+            Err(e) => {
+                set_task_status(&app, tid, "failed", &format!("开始校验事务失败: {}", e));
                 return None;
             }
         };
@@ -1763,7 +1772,7 @@ async fn finish_after_generation(
                 .and_then(|v| v.as_i64())
                 .unwrap_or_else(|| (i as i64) + 1);
             if ok { success_count += 1; }
-            let _ = conn.execute(
+            let _ = tx.execute(
                 "INSERT INTO task_images (task_round_id, image_index, original_url, saved_path, sha256, file_size, format, download_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 rusqlite::params![
                     round_id,
@@ -1788,23 +1797,27 @@ async fn finish_after_generation(
         };
         let now_round = Utc::now().to_rfc3339();
         let _ = if download_retry_exhausted {
-            conn.execute(
+            tx.execute(
                 "UPDATE task_rounds SET status = ?1, success_count = ?2, failure_reason = 'download_retries_exhausted', completed_at = ?3 WHERE id = ?4",
                 rusqlite::params![round_status, success_count, now_round, round_id],
             )
         } else {
-            conn.execute(
+            tx.execute(
                 "UPDATE task_rounds SET status = ?1, success_count = ?2, completed_at = ?3 WHERE id = ?4",
                 rusqlite::params![round_status, success_count, now_round, round_id],
             )
         };
         // 记录账号最近使用时间（用于按列表轮换参考）
-        let _ = conn.execute(
+        let _ = tx.execute(
             "UPDATE accounts SET last_used_at = ?1 WHERE id = ?2",
             rusqlite::params![now_round, account_id],
         );
-        let _ = db_write_log(&conn, Some(tid), "info",
+        let _ = db_write_log(&tx, Some(tid), "info",
             &format!("本轮下载完成：成功 {}/{} 张", success_count, total));
+        if let Err(e) = tx.commit() {
+            set_task_status(&app, tid, "failed", &format!("提交校验事务失败: {}", e));
+            return None;
+        }
     }
 
     // 8. 记录本轮进度 + 写入 task.json（任务整体状态由调用方按轮次决定）
@@ -2096,6 +2109,8 @@ async fn resume_selection_round(
         "refs": refs,
         "prompt": prompt.clone(),
         "pause_before_submit": setting_enabled("confirm_before_submit"),
+        "trace": setting_enabled("playwright_trace"),
+        "round_dir": output_dir.clone().unwrap_or_default(),
     });
     scheduler.send_sidecar_cmd(gen_cmd)?;
     set_task_status(app, tid, "submitting", "已提交，等待生成完成");

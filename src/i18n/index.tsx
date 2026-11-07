@@ -285,6 +285,8 @@ const translations: Record<Lang, Record<string, string>> = {
     'settings.updateFailed': '检查更新失败（若未配置更新源，这是预期结果）: ',
     'settings.notifyPermissionDenied': '系统通知权限未授予，已开启软件内通知（不发送系统通知）',
     'settings.versionLabel': '软件版本',
+    'settings.playwrightTraceLabel': '启用 Playwright Trace',
+    'settings.playwrightTraceNote': '每轮操作保存 trace.zip 到轮次输出目录（仅调试用，体积较大）',
 
   },
   'en-US': {
@@ -559,6 +561,8 @@ const translations: Record<Lang, Record<string, string>> = {
     'settings.updateFailed': 'Update check failed (expected if no update source is configured): ',
     'settings.notifyPermissionDenied': 'System notification permission not granted. In-app notifications only (no system notifications).',
     'settings.versionLabel': 'App version',
+    'settings.playwrightTraceLabel': 'Enable Playwright Trace',
+    'settings.playwrightTraceNote': 'Records trace.zip per round into the round output folder (for debugging only; can be large).',
 
   },
 }
