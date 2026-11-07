@@ -1373,7 +1373,16 @@ README 中说明：
     - 覆盖任务开始/完成/失败/需人工处理/阈值/最大重试；验证码、登录失效、网页结构变化等复用 `needs_manual_intervention` 同一通道。
   - 验证：`cargo test` 33 项通过（新增 CSV 转义/公式注入 2 项）；`npx tsc --noEmit`、`npm run build`；GUI 实测执行日志页（筛选条、导出 CSV、表格任务名列）与通知铃铛/面板渲染正常。
   - 评审（dev-reviewer, 首轮 4 Major/Minor）：CSV BOM 缺失、公式注入、导出与显示不一致（300 限制与提示）、通知列表/监听竞态 → 全部修复（`csv_cell`、UTF-8 BOM、导出 5000 上限明示、订阅先于拉取并按 id 去重合并）；通知 `kind/title/message/level` 均有长度与枚举钳制；SQL/参数顺序/IPC 命名/0-1→bool 映射经审查确认安全。
-- [ ] **P1-5 国际化与设置**：全部 UI 文案走 i18n 资源（当前约 20 个词条、大量硬编码中文）；补齐全局参数、执行模式、通知开关、浏览器设置、版本号等设置项。
+- [x] **P1-5 国际化与设置**：全部 UI 文案走 i18n 资源（当前约 20 个词条、大量硬编码中文）；补齐全局参数、执行模式、通知开关、浏览器设置、版本号等设置项。
+  - 完成 2026-11-07：
+    - i18n 基础设施重写：`localStorage` 持久化（`ai-image-generate.lang`）、`t(key, vars)` 支持 `{placeholder}` 插值（replaceAll）、缺失键回退 zh-CN；语言选择跨重启持久。
+    - 全部 9 个界面（仪表盘/项目管理/账号管理/任务队列/执行日志/设置/RoundDetail/执行日志页/NotificationCenter）的所有硬编码 UI 文案迁移到双语资源（`src/i18n/index.tsx`，约 190 词条 × zh/en）。
+    - 共享状态标签模块 `src/utils/taskStatus.ts`（任务/确认节点/下载状态标签经 i18n）。
+    - 设置补齐（经与 task.md 第十二节对照）：默认执行模式（`execution_mode` auto=连续执行 | step=每轮暂停，后端 `run_rounds_loop` 接线：step 模式每轮完成后写 `needs_manual_intervention`，用户点「继续执行」从下一轮开始）；`notify_enabled` 通知开关（已接线 + 系统权限请求）；每轮生图数量固定 5（向用户展示为固定项）；软件版本（`getVersion()` 来自 `@tauri-apps/api/app`，当前 0.1.0）；检查更新已有实现保留；语言持久化；「不提供代理配置」（按规范不提供）。
+    - 后端文案（`set_task_status` 日志）保持中文，本次不做本地化（明确范围之外）。
+  - 浏览器相关设置：未添加任何未经验证的浏览器选项（仅保留现有已验证的可见浏览器模式），避免破坏现有流程。
+  - 全局默认生图参数：依赖 P0-4 的真实网页参数验证，本次不实现。
+  - 验证：`cargo test` 33 项通过、`npx tsc --noEmit`、`npm run build`；GUI 实测中文与 English 两种语言的全部页面（仪表盘/项目/账号/任务队列/日志/设置），未发现 raw-key 泄漏；zh-CN 默认回退正常。
 - [ ] **P1-6 数据库与诊断**：数据库迁移版本机制、关键状态更新事务、Playwright Trace、失败时保存 URL/截图/脱敏日志。
 - [ ] **P1-7 测试矩阵**：补齐文件夹单元识别、随机抽取、补足、池耗尽重洗、输出命名、状态转换、参数继承、账号阈值等单元测试；增加可重复运行的集成测试与真实浏览器 E2E。
 
@@ -1400,7 +1409,7 @@ README 中说明：
 | 17 | 能处理登录失效、验证码和网页结构变化 | 🟡 |
 | 18 | 能保留错误截图和诊断信息 | 🟡 |
 | 19 | 能查看和导出完整执行日志 | 🟡 |
-| 20 | 支持中文和英文 | 🟡 |
+| 20 | 支持中文和英文 | ✅ |
 | 21 | 支持检查和安装软件更新 | 🟡 |
 | 22 | 文档齐全 | ✅ |
 
@@ -1411,6 +1420,28 @@ README 中说明：
 - 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-07（P1-5 国际化与设置）
+
+**改动文件**
+
+- `src/i18n/index.tsx`：重写——`localStorage` 持久化、插值、zh-CN 缺失回退，约 190 词条 × 双语。
+- `src/utils/taskStatus.ts`（新）：`useTaskStatusLabels` / `useConfirmNodeLabels` / `useDownloadStatusLabels`（经 i18n）。
+- `src/pages/*.tsx`、`src/components/NotificationCenter.tsx`：全部 UI 文案迁移 `t()`；新增任务状态标签调用点。
+- `src-tauri/src/task_scheduler.rs`：`setting_execution_mode()` 读 `execution_mode`；`run_rounds_loop` 在 step 模式每轮完成后暂停并发送 `task-round-completed`，`setting_execution_mode()` 默认 `auto`（行为不变）。
+- `src/pages/Settings.tsx`：默认执行模式下拉、每轮生图固定 5 显示、软件版本（`getVersion()`）、通知开关文案接线、`execution_mode` 写库。
+
+**验证**
+
+```powershell
+cd src-tauri; cargo test  # 33 passed
+cd ..; npx tsc --noEmit   # passed
+npm run build             # passed
+```
+
+**实机验证（2026-11-07 开发模式窗口）**：中文/English 全页面逐一切换（仪表盘/项目/账号/任务队列/日志/设置），无 raw-key 泄漏；English GUI 实测全部渲染正常；`App version` 显示 0.1.0；默认执行模式下拉正常；随后关闭开发窗口。
+
+**评审**：dev-reviewer（shell 受限、人工补查）：所有 `t()` 键对照 t() 调用点完整；`@tauri-apps/api/app` 的 `getVersion()` 已确认存在于安装版本（2.12.4）；step-mode 的 resume 路径已核实：最新轮 `completed` 且剩余轮次 > 0 时从 N+1 轮启动后续轮次，无重复继续；JSX 平衡；通知限制任务名最长、整数检查等。低风险项修复（CSV 导出为 5000 行上限在日志页文案明示、en-US 导出文案补齐）。
 
 ### 2026-11-07（P1-4 日志与通知）
 

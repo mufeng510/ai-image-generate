@@ -719,6 +719,21 @@ fn setting_enabled(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/** 默认执行模式：`step` 表示每轮完成后暂停，等待用户手动「继续执行」；其余为 `auto` */
+fn setting_execution_mode() -> String {
+    get_connection()
+        .ok()
+        .and_then(|conn| {
+            conn.query_row(
+                "SELECT value FROM app_settings WHERE key = 'execution_mode'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+        })
+        .unwrap_or_else(|| "auto".to_string())
+}
+
 /** 进入人工确认节点：写入 waiting_confirmation 与中断原因，等待用户点击「继续执行」 */
 fn enter_confirmation_node(app: &AppHandle, tid: i64, round_id: i64, reason: &str, message: &str) {
     if let Ok(conn) = get_connection() {
@@ -1203,6 +1218,20 @@ async fn run_rounds_loop(
                 return false;
             }
             Err(()) => return false,
+        }
+        // step 模式：每轮完成后暂停，等待用户手动进行下一轮
+        if round_number < total_rounds && setting_execution_mode() == "step" {
+            set_task_status(
+                app,
+                tid,
+                "needs_manual_intervention",
+                &format!("第 {} 轮已完成，点击「继续执行」开始第 {} 轮", round_number, round_number + 1),
+            );
+            let _ = app.emit(
+                "task-round-completed",
+                serde_json::json!({ "task_id": tid, "round_number": round_number }),
+            );
+            return false;
         }
         round_number += 1;
     }

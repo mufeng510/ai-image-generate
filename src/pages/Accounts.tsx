@@ -3,12 +3,6 @@ import { listen } from '@tauri-apps/api/event'
 import { accountList, accountAdd, accountDelete, accountOpenLogin, accountReorder, accountThresholdSet, type Account } from '@/hooks/api'
 import { useI18n } from '@/i18n'
 
-const STATUS_LABEL: Record<string, string> = {
-  unknown: '未知',
-  login_pending: '等待登录…',
-  logged_in: '已登录',
-}
-
 const smallBtn: React.CSSProperties = {
   background: '#f3f4f6',
   color: '#374151',
@@ -31,6 +25,12 @@ export default function AccountsPage() {
   const [name, setName] = useState('')
   const [loading, setLoading] = useState(false)
   const [draggingId, setDraggingId] = useState<number | null>(null)
+
+  const STATUS_LABEL: Record<string, string> = {
+    unknown: t('accounts.unknown'),
+    login_pending: t('accounts.loginPending'),
+    logged_in: t('accounts.loggedIn'),
+  }
 
   useEffect(() => {
     load()
@@ -57,7 +57,7 @@ export default function AccountsPage() {
       const data = await accountList()
       setAccounts(data)
     } catch (e) {
-      alert('加载账号失败: ' + e)
+      alert(t('accounts.loadFailed') + e)
     } finally {
       setLoading(false)
     }
@@ -66,7 +66,7 @@ export default function AccountsPage() {
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
     if (!name.trim()) {
-      alert('账号名称不能为空。请先在输入框输入账号名称（注意：如果豆包浏览器窗口获得了键盘焦点，输入内容会进入豆包页面，而不是此处）。')
+      alert(t('accounts.nameEmpty'))
       return
     }
     setLoading(true)
@@ -75,7 +75,7 @@ export default function AccountsPage() {
       setAccounts([...accounts, a])
       setName('')
     } catch (e) {
-      alert('创建失败: ' + e)
+      alert(t('accounts.createFailed') + e)
     } finally {
       setLoading(false)
     }
@@ -86,17 +86,17 @@ export default function AccountsPage() {
       await accountOpenLogin(id)
       await load()
     } catch (e) {
-      alert('打开登录窗口失败: ' + e)
+      alert(t('accounts.loginFailed') + e)
     }
   }
 
   async function handleDelete(id: number) {
-    if (!window.confirm('确定删除？')) return
+    if (!window.confirm(t('accounts.deleteConfirm'))) return
     try {
       await accountDelete(id)
       setAccounts(accounts.filter((a) => a.id !== id))
     } catch (e) {
-      alert('删除失败: ' + e)
+      alert(t('accounts.deleteFailed') + e)
     }
   }
 
@@ -109,7 +109,7 @@ export default function AccountsPage() {
       await accountThresholdSet(account.id!, value)
       setAccounts(accounts.map((a) => (a.id === account.id ? { ...a, image_threshold: value } : a)))
     } catch (e2) {
-      alert('阈值保存失败: ' + e2)
+      alert(t('accounts.thresholdFailed') + e2)
     }
   }
 
@@ -130,7 +130,7 @@ export default function AccountsPage() {
     setAccounts(reordered)
     setDraggingId(null)
     accountReorder(reordered.map((a) => a.id!)).catch((e) => {
-      alert('保存排序失败: ' + e)
+      alert(t('accounts.orderFailed') + e)
       load()
     })
   }
@@ -139,11 +139,11 @@ export default function AccountsPage() {
     <div style={{ padding: '24px' }}>
       <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         {t('nav.accounts')}
-        <button onClick={load} style={{ fontSize: '12px', padding: '6px 12px', border: '1px solid #d1d5db', background: '#fff', borderRadius: '6px', cursor: 'pointer', fontWeight: '400' }}>刷新状态</button>
+        <button onClick={load} style={{ fontSize: '12px', padding: '6px 12px', border: '1px solid #d1d5db', background: '#fff', borderRadius: '6px', cursor: 'pointer', fontWeight: '400' }}>{t('accounts.refresh')}</button>
       </h2>
       <form onSubmit={handleCreate} style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
         <input
-          placeholder="账号名称"
+          placeholder={t('accounts.namePlaceholder')}
           value={name}
           onChange={(e) => setName(e.target.value)}
           style={{ padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', flex: 1, minWidth: '200px' }}
@@ -157,20 +157,20 @@ export default function AccountsPage() {
         </button>
       </form>
       <p style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '12px' }}>
-        拖动行首可调整账号顺序；任务默认按列表顺序自动轮换（未登录或已达自定义阈值的账号会被跳过），创建任务时也可显式指定账号。阈值为 0 表示不限制，阈值仅为个人管理规则。
+        {t('accounts.note')}
       </p>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: '8px', overflow: 'hidden' }}>
           <thead>
             <tr style={{ background: '#f9fafb' }}>
-              <th style={{ padding: '12px 8px', textAlign: 'left', color: '#6b7280', fontSize: '13px', width: '56px' }}>顺序</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>账号名称</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>状态</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>成功图片</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>完成轮次</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>阈值</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>最近使用</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>操作</th>
+              <th style={{ padding: '12px 8px', textAlign: 'left', color: '#6b7280', fontSize: '13px', width: '56px' }}>{t('accounts.order')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('accounts.nameCol')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('accounts.status')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('accounts.verifiedImages')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('accounts.completedRounds')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('accounts.threshold')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('accounts.lastUsed')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('accounts.operations')}</th>
             </tr>
           </thead>
           <tbody>
@@ -205,7 +205,7 @@ export default function AccountsPage() {
                     {a.name}
                     {overThreshold && (
                       <span style={{ marginLeft: '6px', fontSize: '11px', background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', borderRadius: '4px', padding: '2px 6px' }}>
-                        已达阈值
+                        {t('accounts.overThreshold')}
                       </span>
                     )}
                   </td>
@@ -218,7 +218,7 @@ export default function AccountsPage() {
                       type="number"
                       min={0}
                       defaultValue={a.image_threshold ?? 0}
-                      title="0 = 不限制；仅个人管理规则，不代表平台配额"
+                      title={t('accounts.threshold')}
                       onBlur={(e) => handleThresholdChange(a, e)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') e.currentTarget.blur()
@@ -232,7 +232,7 @@ export default function AccountsPage() {
                       onClick={() => handleLogin(a.id!)}
                       style={{ ...smallBtn, background: '#166534', color: '#fff', border: '1px solid #166534' }}
                     >
-                      打开登录窗口
+                      {t('accounts.openLogin')}
                     </button>
                     <button
                       onClick={() => handleDelete(a.id!)}
@@ -247,7 +247,7 @@ export default function AccountsPage() {
             {accounts.length === 0 && (
               <tr>
                 <td colSpan={8} style={{ padding: '24px', textAlign: 'center', color: '#9ca3af' }}>
-                  暂无账号
+                  {t('common.empty')}
                 </td>
               </tr>
             )}

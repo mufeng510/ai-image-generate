@@ -10,6 +10,7 @@ import {
   settingsGet,
   type Notification,
 } from '@/hooks/api'
+import { useI18n } from '@/i18n'
 
 const LEVEL_DOT: Record<string, string> = {
   info: '#2563eb',
@@ -36,6 +37,7 @@ function fmtTime(value?: string): string {
 }
 
 export default function NotificationCenter({ onOpenTask }: Props) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<Notification[]>([])
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -109,8 +111,8 @@ export default function NotificationCenter({ onOpenTask }: Props) {
         const payload = p(e)
         notify({
           kind: 'task_started',
-          title: '任务已开始',
-          message: `任务 #${payload.task_id} 已开始执行`,
+          title: t('notify.taskStarted'),
+          message: t('notify.taskStartedMessage', { id: payload.task_id }),
           level: 'info',
           task_id: payload.task_id,
         })
@@ -119,8 +121,8 @@ export default function NotificationCenter({ onOpenTask }: Props) {
         const payload = p(e)
         notify({
           kind: 'task_completed',
-          title: '任务完成',
-          message: `任务 #${payload.task_id} 已完成`,
+          title: t('notify.taskCompleted'),
+          message: t('notify.taskCompletedMessage', { id: payload.task_id }),
           level: 'success',
           task_id: payload.task_id,
         })
@@ -131,16 +133,16 @@ export default function NotificationCenter({ onOpenTask }: Props) {
         if (status === 'failed') {
           notify({
             kind: 'task_failed',
-            title: '任务失败',
-            message: `任务 #${payload.task_id} 执行失败，请查看执行日志`,
+            title: t('notify.taskFailed'),
+            message: t('notify.taskFailedMessage', { id: payload.task_id }),
             level: 'error',
             task_id: payload.task_id,
           })
         } else if (status === 'needs_manual_intervention') {
           notify({
             kind: 'needs_manual_intervention',
-            title: '需人工处理',
-            message: `任务 #${payload.task_id} 需要手动处理，请查看任务队列`,
+            title: t('notify.needsIntervention'),
+            message: t('notify.needsInterventionMessage', { id: payload.task_id }),
             level: 'warn',
             task_id: payload.task_id,
           })
@@ -150,8 +152,8 @@ export default function NotificationCenter({ onOpenTask }: Props) {
         const payload = p(e)
         notify({
           kind: 'retry_exhausted',
-          title: '超过最大重试次数',
-          message: `下载未完成，达到最大重试次数（阶段：${payload.stage ?? 'unknown'}），已暂停`,
+          title: t('notify.retryExhausted'),
+          message: t('notify.retryExhaustedMessage', { stage: payload.stage ?? 'unknown' }),
           level: 'error',
           task_id: payload.task_id,
         })
@@ -160,8 +162,8 @@ export default function NotificationCenter({ onOpenTask }: Props) {
         const payload = p(e)
         notify({
           kind: 'account_threshold_reached',
-          title: '账号已达自定义阈值',
-          message: `账号 #${payload.account_id} 已达到用户设定的图片阈值，任务已暂停`,
+          title: t('notify.thresholdReached'),
+          message: t('notify.thresholdMessage', { id: payload.account_id }),
           level: 'warn',
           task_id: payload.task_id,
         })
@@ -187,7 +189,7 @@ export default function NotificationCenter({ onOpenTask }: Props) {
       await notificationClear()
       setItems([])
     } catch (e) {
-      alert('清空通知失败: ' + e)
+      alert(t('msg.clearNotifyFailed') + e)
     }
   }
 
@@ -196,7 +198,7 @@ export default function NotificationCenter({ onOpenTask }: Props) {
       await notificationMarkAllRead()
       setItems((prev) => prev.map((i) => ({ ...i, read: true })))
     } catch (e) {
-      alert('标记已读失败: ' + e)
+      alert(t('msg.markAllReadFailed') + e)
     }
   }
 
@@ -220,8 +222,8 @@ export default function NotificationCenter({ onOpenTask }: Props) {
       {/* 通知铃铛（右上角悬浮按钮） */}
       <button
         onClick={() => setOpen((v) => !v)}
-        title="通知中心"
-        aria-label="通知中心"
+        title={t('notify.center.aria')}
+        aria-label={t('notify.center.aria')}
         style={{
           position: 'fixed',
           top: '16px',
@@ -285,25 +287,25 @@ export default function NotificationCenter({ onOpenTask }: Props) {
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: '1px solid #f0f0f0' }}>
-              <span style={{ fontSize: '14px', fontWeight: 600, color: '#111827' }}>通知中心</span>
+              <span style={{ fontSize: '14px', fontWeight: 600, color: '#111827' }}>{t('notify.center.title')}</span>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
                   onClick={handleMarkAllRead}
                   style={{ fontSize: '12px', padding: '4px 10px', border: '1px solid #d1d5db', borderRadius: '6px', background: '#fff', cursor: 'pointer', color: '#374151' }}
                 >
-                  全部已读
+                  {t('notify.center.markAllRead')}
                 </button>
                 <button
                   onClick={handleClear}
                   style={{ fontSize: '12px', padding: '4px 10px', border: '1px solid #fecaca', borderRadius: '6px', background: '#fff', cursor: 'pointer', color: '#b91c1c' }}
                 >
-                  清空
+                  {t('notify.center.clear')}
                 </button>
               </div>
             </div>
             <div style={{ overflowY: 'auto' }}>
               {items.length === 0 ? (
-                <div style={{ padding: '24px', textAlign: 'center', fontSize: '12px', color: '#9ca3af' }}>暂无通知</div>
+                <div style={{ padding: '24px', textAlign: 'center', fontSize: '12px', color: '#9ca3af' }}>{t('notify.center.empty')}</div>
               ) : (
                 items.map((item) => (
                   <button
@@ -367,7 +369,7 @@ export default function NotificationCenter({ onOpenTask }: Props) {
                   e.stopPropagation()
                   setToasts((prev) => prev.filter((t) => t.id !== toast.id))
                 }}
-                aria-label="关闭"
+                aria-label={t('common.close')}
                 style={{ background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: '14px', lineHeight: 1 }}
               >
                 ×

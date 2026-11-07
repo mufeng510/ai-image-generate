@@ -3,9 +3,10 @@ import { settingsGet, settingsSet } from '@/hooks/api'
 import { useI18n } from '@/i18n'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification'
+import { getVersion } from '@tauri-apps/api/app'
 
 export default function SettingsPage() {
-  const { lang, setLang } = useI18n()
+  const { t, lang, setLang } = useI18n()
   const [projectRoot, setProjectRoot] = useState('')
   const [maxRetries, setMaxRetries] = useState('3')
   const [confirmSelection, setConfirmSelection] = useState(false)
@@ -14,6 +15,8 @@ export default function SettingsPage() {
   const [installing, setInstalling] = useState(false)
   const [update, setUpdate] = useState<Update | null>(null)
   const [notifyEnabled, setNotifyEnabled] = useState(false)
+  const [executionMode, setExecutionMode] = useState<'auto' | 'step'>('auto')
+  const [version, setVersion] = useState('')
 
   async function load() {
     const v = await settingsGet('project_root')
@@ -26,6 +29,9 @@ export default function SettingsPage() {
     setConfirmBeforeSubmit(cb === 'true')
     const ne = await settingsGet('notify_enabled')
     setNotifyEnabled(ne === 'true')
+    const em = await settingsGet('execution_mode')
+    setExecutionMode(em === 'step' ? 'step' : 'auto')
+    getVersion().then(setVersion).catch(() => setVersion('unknown'))
   }
 
   useEffect(() => {
@@ -39,12 +45,12 @@ export default function SettingsPage() {
       const u = await check()
       setUpdate(u)
       if (u) {
-        alert(`发现新版本 ${u.version}${u.body ? '\n\n' + u.body : ''}`)
+        alert(`${t('settings.newVersion', { version: u.version })}${u.body ? '\n\n' + u.body : ''}`)
       } else {
-        alert('当前已是最新版本')
+        alert(t('settings.latestVersion'))
       }
     } catch (e) {
-      alert('检查更新失败（若未配置更新源，这是预期结果）: ' + String(e))
+      alert(t('settings.updateFailed') + String(e))
     } finally {
       setChecking(false)
     }
@@ -52,15 +58,15 @@ export default function SettingsPage() {
 
   async function downloadAndInstall() {
     if (!update) {
-      alert('请先点击“检查更新”')
+      alert(t('settings.beforeCheck'))
       return
     }
     setInstalling(true)
     try {
       await update.downloadAndInstall()
-      alert('更新已安装，请重启应用')
+      alert(t('settings.installDone'))
     } catch (e) {
-      alert('下载或安装失败: ' + String(e))
+      alert(t('settings.downloadPromptFailed') + String(e))
     } finally {
       setInstalling(false)
     }
@@ -70,9 +76,9 @@ export default function SettingsPage() {
     try {
       await settingsSet(key, getVal())
       setVal(getVal())
-      alert('保存成功')
+      alert(t('settings.saveSuccess'))
     } catch (e) {
-      alert('保存失败: ' + e)
+      alert(t('settings.saveFailed') + e)
     }
   }
 
@@ -81,7 +87,7 @@ export default function SettingsPage() {
       await settingsSet(key, value ? 'true' : 'false')
       setVal(value)
     } catch (e) {
-      alert('保存失败: ' + e)
+      alert(t('settings.saveFailed') + e)
     }
   }
 
@@ -91,7 +97,7 @@ export default function SettingsPage() {
         await settingsSet('notify_enabled', 'false')
         setNotifyEnabled(false)
       } catch (e) {
-        alert('保存失败: ' + e)
+        alert(t('settings.saveFailed') + e)
       }
       return
     }
@@ -102,21 +108,21 @@ export default function SettingsPage() {
         granted = result === 'granted'
       }
       if (!granted) {
-        alert('系统通知权限未授予，已开启软件内通知（不发送系统通知）')
+        alert(t('settings.notifyPermissionDenied'))
       }
       await settingsSet('notify_enabled', 'true')
       setNotifyEnabled(true)
     } catch (e) {
-      alert('启用通知失败: ' + e)
+      alert(t('settings.saveFailed') + e)
     }
   }
 
   return (
     <div style={{ padding: '24px' }}>
-      <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '24px' }}>设置</h2>
+      <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '24px' }}>{t('nav.settings')}</h2>
       <div style={{ background: '#fff', border: '1px solid #e5e5e5', borderRadius: '12px', padding: '24px' }}>
         <div style={{ marginBottom: '16px' }}>
-          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>项目根目录</label>
+          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.projectRoot')}</label>
           <input
             value={projectRoot}
             onChange={(e) => setProjectRoot(e.target.value)}
@@ -124,7 +130,7 @@ export default function SettingsPage() {
           />
         </div>
         <div style={{ marginBottom: '16px' }}>
-          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>最大重试次数</label>
+          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.maxRetries')}</label>
           <input
             type="number"
             value={maxRetries}
@@ -133,18 +139,17 @@ export default function SettingsPage() {
           />
         </div>
         <div style={{ marginBottom: '16px' }}>
-          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>界面语言</label>
+          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.language')}</label>
           <select
             value={lang}
             onChange={(e) => setLang(e.target.value as any)}
             style={{ padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
           >
-            <option value="zh-CN">中文</option>
-            <option value="en-US">English</option>
+            <option value="zh-CN">{t('lang.zh')}</option>
+            <option value="en-US">{t('lang.en')}</option>
           </select>
         </div>
         <div style={{ marginBottom: '16px' }}>
-          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>启用通知</label>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <input
               id='notify'
@@ -154,12 +159,12 @@ export default function SettingsPage() {
               style={{ width: '18px', height: '18px', cursor: 'pointer' }}
             />
             <label htmlFor='notify' style={{ fontSize: '13px', color: '#1a1a1a', cursor: 'pointer' }}>
-              启用任务状态变更通知（任务开始/完成/失败/需人工处理/阈值/最大重试）
+              {t('settings.notify')}
             </label>
           </div>
         </div>
         <div style={{ marginBottom: '16px' }}>
-          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>人工确认模式</label>
+          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.confirmMode')}</label>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
               <input
@@ -168,7 +173,7 @@ export default function SettingsPage() {
                 onChange={(e) => toggleSetting('confirm_selection', e.target.checked, setConfirmSelection)}
                 style={{ width: '18px', height: '18px', cursor: 'pointer' }}
               />
-              抽图后暂停，确认参考图后再上传
+              {t('settings.confirmSelection')}
             </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
               <input
@@ -177,26 +182,54 @@ export default function SettingsPage() {
                 onChange={(e) => toggleSetting('confirm_before_submit', e.target.checked, setConfirmBeforeSubmit)}
                 style={{ width: '18px', height: '18px', cursor: 'pointer' }}
               />
-              上传参考图并填写提示词后暂停，确认后再提交
+              {t('settings.confirmBeforeSubmit')}
             </label>
           </div>
         </div>
         <div style={{ marginBottom: '16px' }}>
-          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>软件更新</label>
+          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.executionMode')}</label>
+          <select
+            value={executionMode}
+            onChange={async (e) => {
+              const next = e.target.value as 'auto' | 'step'
+              setExecutionMode(next)
+              try {
+                await settingsSet('execution_mode', next)
+              } catch (err) {
+                alert(t('settings.saveFailed') + err)
+              }
+            }}
+            style={{ padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+          >
+            <option value="auto">{t('settings.executionAuto')}</option>
+            <option value="step">{t('settings.executionStep')}</option>
+          </select>
+        </div>
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.roundCountNote')}</label>
+        </div>
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.versionLabel')}</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '14px', color: '#1a1a1a', fontFamily: 'ui-monospace, monospace' }}>{version || '—'}</span>
+          </div>
+        </div>
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.update')}</label>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <button
               onClick={checkForUpdates}
               disabled={checking}
               style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
             >
-              {checking ? '检查中…' : '检查更新'}
+              {checking ? t('settings.checking') : t('settings.checkUpdate')}
             </button>
             <button
               onClick={downloadAndInstall}
               disabled={installing || !update}
               style={{ padding: '8px 16px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '6px', cursor: installing || !update ? 'not-allowed' : 'pointer', opacity: installing || !update ? 0.6 : 1 }}
             >
-              {installing ? '安装中…' : '下载并安装'}
+              {installing ? t('settings.installing') : t('settings.downloadInstall')}
             </button>
           </div>
         </div>
@@ -205,13 +238,13 @@ export default function SettingsPage() {
             onClick={() => saveKey('project_root', () => projectRoot, setProjectRoot)}
             style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
           >
-            保存项目根目录
+            {t('settings.saveProjectRoot')}
           </button>
           <button
             onClick={() => saveKey('max_retries', () => maxRetries, setMaxRetries)}
             style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
           >
-            保存重试次数
+            {t('settings.saveMaxRetries')}
           </button>
         </div>
       </div>

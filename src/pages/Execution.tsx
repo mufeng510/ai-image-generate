@@ -22,23 +22,7 @@ import {
   type Account,
 } from '@/hooks/api'
 import { listen } from '@tauri-apps/api/event'
-
-const STATUS_LABELS: Record<string, string> = {
-  pending: '待处理',
-  preparing: '准备中',
-  selecting_images: '抽图中',
-  waiting_confirmation: '等待确认',
-  uploading: '上传中',
-  submitting: '提交中',
-  generating: '生成中',
-  downloading: '下载中',
-  verifying: '校验中',
-  completed: '已完成',
-  paused: '已暂停',
-  failed: '失败',
-  cancelled: '已取消',
-  needs_manual_intervention: '需人工干预',
-}
+import { useTaskStatusLabels, useConfirmNodeLabels } from '@/utils/taskStatus'
 
 const STATUS_COLORS: Record<string, string> = {
   pending: '#6b7280',
@@ -55,12 +39,6 @@ const STATUS_COLORS: Record<string, string> = {
   failed: '#dc2626',
   cancelled: '#6b7280',
   needs_manual_intervention: '#dc2626',
-}
-
-/** 人工确认节点名称 */
-const CONFIRM_NODE_LABELS: Record<string, string> = {
-  confirm_selection: '抽图后',
-  confirm_before_submit: '提交前',
 }
 
 /** 正在执行、可被暂停/取消的状态 */
@@ -86,6 +64,8 @@ const CANCELLABLE_STATUSES = [
 
 export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: number) => void }) {
   const { t } = useI18n()
+  const STATUS_LABELS = useTaskStatusLabels()
+  const CONFIRM_NODE_LABELS = useConfirmNodeLabels()
   const [tasks, setTasks] = useState<Task[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -123,7 +103,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
           setTasks((prev) =>
             prev.map((t) => (t.id === task_id ? { ...t, status } : t))
           )
-          addLog(`任务 #${task_id} 状态变更: ${status}`)
+          addLog(t('logs.taskStatusChanged', { id: task_id, status }))
         }
       )
 
@@ -134,7 +114,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
           setTasks((prev) =>
             prev.map((t) => (t.id === task_id ? { ...t, status: 'completed' } : t))
           )
-          addLog(`任务 #${task_id} 已完成`)
+          addLog(t('logs.taskCompleted', { id: task_id }))
         }
       )
 
@@ -162,7 +142,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
     if (!projectId) {
-      alert('请选择项目')
+      alert(t('tasks.selectProject'))
       return
     }
     setLoading(true)
@@ -174,7 +154,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
       setRounds('1')
       await loadTasks()
     } catch (err) {
-      alert('创建任务失败: ' + err)
+      alert(t('tasks.createFailed') + err)
     } finally {
       setLoading(false)
     }
@@ -185,7 +165,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
       await taskStart(id)
       await loadTasks()
     } catch (e) {
-      alert('启动失败: ' + e)
+      alert(t('tasks.startFailed') + e)
     }
   }
 
@@ -194,7 +174,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
       await fn(id)
       await loadTasks()
     } catch (e) {
-      alert('操作失败: ' + e)
+      alert(t('tasks.actionFailed') + e)
     }
   }
 
@@ -206,7 +186,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
           onClick={loadTasks}
           style={{ padding: '6px 12px', border: '1px solid #d1d5db', borderRadius: '6px', background: '#fff', cursor: 'pointer' }}
         >
-          刷新
+          {t('btn.refresh')}
         </button>
       </div>
 
@@ -216,24 +196,24 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
           onChange={(e) => setProjectId(e.target.value)}
           style={{ padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', minWidth: '180px' }}
         >
-          <option value="">选择项目…</option>
+          <option value="">{t('tasks.createPlaceholderProject')}</option>
           {projects.map((p) => (
-            <option key={p.id} value={p.id}>项目 #{p.id} {p.name}</option>
+            <option key={p.id} value={p.id}>{t('tasks.projectHeader')} #{p.id} {p.name}</option>
           ))}
         </select>
         <select
           value={accountId}
           onChange={(e) => setAccountId(e.target.value)}
-          title="留空 = 按列表顺序自动选择（跳过未登录或已达自定义阈值的账号）"
+          title={t('tasks.autoAccountTitle')}
           style={{ padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', minWidth: '180px' }}
         >
-          <option value="">自动选择账号…</option>
+          <option value="">{t('tasks.createPlaceholderAccount')}</option>
           {accounts.map((a) => (
-            <option key={a.id} value={a.id}>账号 #{a.id} {a.name}{a.verified_images != null ? `（${a.verified_images} 张）` : ''}</option>
+            <option key={a.id} value={a.id}>{t('tasks.accountHeader')} #{a.id} {a.name}{a.verified_images != null ? `（${a.verified_images}）` : ''}</option>
           ))}
         </select>
         <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#374151' }}>
-          轮数
+          {t('tasks.rounds')}
           <input
             type="number"
             min={1}
@@ -248,7 +228,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
           disabled={loading}
           style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
         >
-          创建任务
+          {t('tasks.createTask')}
         </button>
       </form>
 
@@ -257,12 +237,12 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
           <thead>
             <tr style={{ background: '#f9fafb' }}>
               <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '12px' }}>ID</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>任务名称</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>状态</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>项目</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>账号</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>进度</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>操作</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.nameHeader')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.statusHeader')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.projectHeader')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.accountHeader')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.progressHeader')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.actionsHeader')}</th>
             </tr>
           </thead>
           <tbody>
@@ -286,12 +266,12 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
                   </span>
                   {task.status === 'needs_manual_intervention' && task.interrupted_status && (
                     <span style={{ marginLeft: '6px', fontSize: '11px', color: '#9ca3af' }}>
-                      上次：{CONFIRM_NODE_LABELS[task.interrupted_status] || STATUS_LABELS[task.interrupted_status] || task.interrupted_status}
+                      {t('tasks.lastRun')}: {CONFIRM_NODE_LABELS[task.interrupted_status] || STATUS_LABELS[task.interrupted_status] || task.interrupted_status}
                     </span>
                   )}
                   {task.status === 'waiting_confirmation' && task.interrupted_status && (
                     <span style={{ marginLeft: '6px', fontSize: '11px', color: '#9ca3af' }}>
-                      节点：{CONFIRM_NODE_LABELS[task.interrupted_status] || task.interrupted_status}
+                      {t('tasks.interrupted')}: {CONFIRM_NODE_LABELS[task.interrupted_status] || task.interrupted_status}
                     </span>
                   )}
                 </td>
@@ -347,7 +327,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
             {tasks.length === 0 && (
               <tr>
                 <td colSpan={7} style={{ padding: '24px', textAlign: 'center', color: '#9ca3af' }}>
-                  暂无任务
+                  {t('tasks.noTasks')}
                 </td>
               </tr>
             )}
@@ -357,12 +337,12 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
 
       <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: '12px', overflow: 'hidden', flex: 1, minHeight: '300px' }}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontSize: '14px', fontWeight: '600', color: '#e5e7eb' }}>执行日志</div>
+          <div style={{ fontSize: '14px', fontWeight: '600', color: '#e5e7eb' }}>{t('tasks.logsTitle')}</div>
           <button
             onClick={() => setLogs([])}
             style={{ padding: '4px 8px', border: '1px solid #4b5563', borderRadius: '4px', background: 'transparent', color: '#9ca3af', cursor: 'pointer', fontSize: '12px' }}
           >
-            清空
+            {t('btn.clear')}
           </button>
         </div>
         <div style={{ padding: '12px 16px', overflowY: 'auto', fontFamily: 'monospace', fontSize: '12px', lineHeight: '1.5', color: '#d1d5db', background: '#0f0f0f' }}>
@@ -373,7 +353,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
               </div>
             ))
           ) : (
-            <div style={{ color: '#6b7280', paddingTop: '20px' }}>暂无日志</div>
+            <div style={{ color: '#6b7280', paddingTop: '20px' }}>{t('logs.none')}</div>
           )}
         </div>
       </div>

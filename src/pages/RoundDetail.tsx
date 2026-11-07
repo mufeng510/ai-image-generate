@@ -12,22 +12,8 @@ import {
   type TaskRound,
   type TaskImage,
 } from '@/hooks/api'
-
-const STATUS_LABELS: Record<string, string> = {
-  preparing: '准备中',
-  selecting_images: '抽图中',
-  waiting_confirmation: '等待确认',
-  uploading: '上传中',
-  submitting: '提交中',
-  generating: '生成中',
-  downloading: '下载中',
-  verifying: '校验中',
-  completed: '已完成',
-  paused: '已暂停',
-  failed: '失败',
-  cancelled: '已取消',
-  needs_manual_intervention: '需人工干预',
-}
+import { useI18n } from '@/i18n'
+import { useTaskStatusLabels, useDownloadStatusLabels } from '@/utils/taskStatus'
 
 const STATUS_COLORS: Record<string, string> = {
   preparing: '#6b7280',
@@ -45,14 +31,10 @@ const STATUS_COLORS: Record<string, string> = {
   needs_manual_intervention: '#dc2626',
 }
 
-const DOWNLOAD_STATUS_LABELS: Record<string, string> = {
-  pending: '待下载',
-  downloading: '下载中',
-  verified: '已完成',
-  failed: '失败',
-}
-
 export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack?: () => void }) {
+  const { t } = useI18n()
+  const STATUS_LABELS = useTaskStatusLabels()
+  const DOWNLOAD_STATUS_LABELS = useDownloadStatusLabels()
   const [rounds, setRounds] = useState<TaskRound[]>([])
   const [images, setImages] = useState<TaskImage[]>([])
   const [, setLoading] = useState(false)
@@ -100,13 +82,13 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
   return (
     <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2 style={{ fontSize: '20px', fontWeight: '600', margin: 0 }}>生成详情</h2>
+        <h2 style={{ fontSize: '20px', fontWeight: '600', margin: 0 }}>{t('roundDetail.title')}</h2>
         {onBack && (
           <button
             onClick={onBack}
             style={{ padding: '6px 12px', border: '1px solid #d1d5db', borderRadius: '6px', background: '#fff', cursor: 'pointer', fontSize: '13px' }}
           >
-            ← 返回任务列表
+            ← {t('roundDetail.back')}
           </button>
         )}
       </div>
@@ -116,11 +98,11 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: '#f9fafb' }}>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>轮次</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>状态</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>成功/总数</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>提交时间</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>操作</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('roundDetail.tableRound')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.statusHeader')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('roundDetail.successTotal')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('roundDetail.submittedAt')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.actionsHeader')}</th>
             </tr>
           </thead>
           <tbody>
@@ -135,7 +117,7 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
                 onClick={() => setSelectedRoundId(round.id ?? null)}
               >
                 <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>
-                  第 {round.round_number ?? 0} 轮
+                  {t('roundDetail.batchRound', { n: round.round_number ?? 0 })}
                 </td>
                 <td style={{ padding: '10px' }}>
                   <span
@@ -162,13 +144,13 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
                 </td>
                 <td style={{ padding: '10px' }}>
                   {selectedRoundId === round.id ? (
-                    <span style={{ color: '#16a34a', fontSize: '11px' }}>已选中</span>
+                    <span style={{ color: '#16a34a', fontSize: '11px' }}>{t('roundDetail.selected')}</span>
                   ) : (
                     <button
                       onClick={() => setSelectedRoundId(round.id ?? null)}
                       style={{ background: '#f3f4f6', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
                     >
-                      查看
+                      {t('btn.view')}
                     </button>
                   )}
                 </td>
@@ -177,7 +159,7 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
             {rounds.length === 0 && (
               <tr>
                 <td colSpan={5} style={{ padding: '24px', textAlign: 'center', color: '#9ca3af' }}>
-                  暂无轮次
+                  {t('roundDetail.none')}
                 </td>
               </tr>
             )}
@@ -190,7 +172,7 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
         <div style={{ background: '#fff', border: '1px solid #e5e5e5', borderRadius: '12px', overflow: 'hidden' }}>
           <div style={{ padding: '16px 24px', borderBottom: '1px solid #e5e5e5', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
-              <div style={{ fontSize: '16px', fontWeight: '600', color: '#1a1a1a' }}>第 {selectedRound.round_number} 轮</div>
+              <div style={{ fontSize: '16px', fontWeight: '600', color: '#1a1a1a' }}>{t('roundDetail.batchRound', { n: selectedRound.round_number ?? 0 })}</div>
               <div style={{ fontSize: '13px', color: '#6b7280' }}>
                 {STATUS_LABELS[selectedRound.status || ''] || selectedRound.status}
               </div>
@@ -210,7 +192,7 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
                       {img.saved_path ? (
                         <img
                           src={`file://${img.saved_path}`}
-                          alt={`图片 ${img.image_index}`}
+                          alt={t('roundDetail.altImage', { n: img.image_index ?? 0 })}
                           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                           onError={(e) => {
                             (e.target as HTMLElement).style.display = 'none'
@@ -218,7 +200,7 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
                         />
                       ) : (
                         <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', fontSize: '12px' }}>
-                          图片不可用
+                          {t('roundDetail.imageUnavailable')}
                         </div>
                       )}
                       <div style={{ position: 'absolute', top: '4px', left: '4px', background: 'rgba(0,0,0,0.6)', color: '#fff', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>
@@ -227,7 +209,7 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
                     </div>
                     <div style={{ padding: '8px' }}>
                       <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
-                        {img.original_url?.split('/').pop() || '未知'}
+                        {img.original_url?.split('/').pop() || t('roundDetail.unknown')}
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#9ca3af' }}>
                         <span>{img.format || '-'}</span>
@@ -241,7 +223,7 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
                 ))
               ) : (
                 <div style={{ padding: '40px', textAlign: 'center', color: '#9ca3af' }}>
-                  暂无图片
+                  {t('roundDetail.noImages')}
                 </div>
               )}
             </div>

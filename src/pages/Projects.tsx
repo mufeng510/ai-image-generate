@@ -26,6 +26,7 @@ import {
   type ReferenceDetail,
 } from '@/hooks/api'
 import { useI18n } from '@/i18n'
+import { useTaskStatusLabels } from '@/utils/taskStatus'
 
 const inputStyle: React.CSSProperties = {
   padding: '8px 12px',
@@ -49,23 +50,6 @@ const dangerStyle: React.CSSProperties = {
   background: '#dc2626',
   color: '#fff',
   border: '1px solid #dc2626',
-}
-
-const STATUS_LABELS: Record<string, string> = {
-  pending: '等待中',
-  preparing: '准备中',
-  selecting_images: '抽图中',
-  waiting_confirmation: '等待确认',
-  uploading: '上传中',
-  submitting: '提交中',
-  generating: '生成中',
-  downloading: '下载中',
-  verifying: '校验中',
-  completed: '已完成',
-  failed: '失败',
-  paused: '已暂停',
-  cancelled: '已取消',
-  needs_manual_intervention: '需人工处理',
 }
 
 function formatBytes(size: number): string {
@@ -100,6 +84,7 @@ const modalCard: React.CSSProperties = {
 
 export default function ProjectsPage() {
   const { t } = useI18n()
+  const STATUS_LABELS = useTaskStatusLabels()
   const [projects, setProjects] = useState<Project[]>([])
   const [name, setName] = useState('')
   const [rootPath, setRootPath] = useState('')
@@ -132,7 +117,7 @@ export default function ProjectsPage() {
       const data = await projectList()
       setProjects(data)
     } catch (e) {
-      alert('加载项目失败: ' + e)
+      alert(t('projects.loadFailed') + e)
     } finally {
       setLoading(false)
     }
@@ -148,7 +133,7 @@ export default function ProjectsPage() {
       setName('')
       setRootPath('')
     } catch (e) {
-      alert('创建失败: ' + e)
+      alert(t('projects.createFailed') + e)
     } finally {
       setLoading(false)
     }
@@ -156,7 +141,7 @@ export default function ProjectsPage() {
 
   async function handleImport() {
     if (!rootPath.trim()) {
-      alert('请填写要导入的项目根目录')
+      alert(t('projects.enterPathToImport'))
       return
     }
     setLoading(true)
@@ -166,35 +151,35 @@ export default function ProjectsPage() {
       setName('')
       setRootPath('')
     } catch (e) {
-      alert('导入失败: ' + e)
+      alert(t('projects.importFailed') + e)
     } finally {
       setLoading(false)
     }
   }
 
   async function handleDelete(id: number) {
-    if (!window.confirm('确定删除？仅移除项目记录，不会删除磁盘文件。')) return
+    if (!window.confirm(t('projects.deleteConfirm'))) return
     try {
       await projectDelete(id)
       setProjects(projects.filter((p) => p.id !== id))
       if (expandedId === id) setExpandedId(null)
     } catch (e) {
-      alert('删除失败: ' + e)
+      alert(t('projects.deleteFailed') + e)
     }
   }
 
   async function handleRename(p: Project) {
-    const next = window.prompt('新的项目名称', p.name)
+    const next = window.prompt(t('projects.renamePrompt'), p.name)
     if (next === null) return
     if (!next.trim()) {
-      alert('项目名称不能为空')
+      alert(t('projects.renameEmpty'))
       return
     }
     try {
       await projectRename(p.id!, next.trim())
       setProjects(projects.map((x) => (x.id === p.id ? { ...x, name: next.trim() } : x)))
     } catch (e) {
-      alert('重命名失败: ' + e)
+      alert(t('projects.renameFailed') + e)
     }
   }
 
@@ -202,7 +187,7 @@ export default function ProjectsPage() {
     try {
       await projectOpenFolder(p.id!)
     } catch (e) {
-      alert('打开目录失败: ' + e)
+      alert(t('projects.openFolderFailed') + e)
     }
   }
 
@@ -216,7 +201,7 @@ export default function ProjectsPage() {
       setStats((prev) => ({ ...prev, [id]: statsData }))
       setRefItems((prev) => ({ ...prev, [id]: itemsData }))
     } catch (e) {
-      alert('读取参考图失败: ' + e)
+      alert(t('msg.readRefsFailed') + e)
     } finally {
       setRefLoading((prev) => ({ ...prev, [id]: false }))
     }
@@ -236,48 +221,48 @@ export default function ProjectsPage() {
     const selected = await openDialog({
       multiple: true,
       directory: false,
-      filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp'] }],
+      filters: [{ name: t('msg.imageFilterName'), extensions: ['jpg', 'jpeg', 'png', 'webp'] }],
     })
     if (!selected) return
     const paths = Array.isArray(selected) ? selected : [selected]
-    const subfolderRaw = window.prompt('子目录（相对于 references，留空表示根目录）', '')
+    const subfolderRaw = window.prompt(t('msg.subfolderPrompt'), '')
     if (subfolderRaw === null) return
     const subfolder = subfolderRaw.trim() || null
     try {
       const result = await projectRefAdd(p.id!, paths, subfolder)
       await refreshReferenceData(p.id!)
       if (result.added === 0) {
-        alert('没有图片被添加。' + (result.skipped.length ? `\n${result.skipped.join('\n')}` : ''))
+        alert(t('msg.noneAdded', { list: result.skipped.length ? `\n${result.skipped.join('\n')}` : '' }))
       } else if (result.skipped.length) {
-        alert(`已添加 ${result.added} 张。以下文件被跳过：\n${result.skipped.join('\n')}`)
+        alert(t('msg.added', { n: result.added, list: result.skipped.join('\n') }))
       }
     } catch (e) {
-      alert('添加参考图失败: ' + e)
+      alert(t('msg.addFailed') + e)
     }
   }
 
   async function handleCreateSubfolder(p: Project) {
-    const rel = window.prompt('新子目录名，例如 主图/2026', '')
+    const rel = window.prompt(t('msg.newSubfolderPrompt'), '')
     if (rel === null) return
     if (!rel.trim()) {
-      alert('子目录名不能为空')
+      alert(t('msg.newSubfolderEmpty'))
       return
     }
     try {
       await projectRefCreateFolder(p.id!, rel.trim())
       await refreshReferenceData(p.id!)
     } catch (e) {
-      alert('新建子目录失败: ' + e)
+      alert(t('msg.createSubfolderFailed') + e)
     }
   }
 
   async function handleDeleteRef(p: Project, item: ReferenceItem) {
-    if (!window.confirm(`确定删除参考图 ${item.name}？此操作会删除磁盘文件。`)) return
+    if (!window.confirm(t('msg.refDeleteConfirm', { name: item.name }))) return
     try {
       await projectRefDelete(p.id!, item.path)
       await refreshReferenceData(p.id!)
     } catch (e) {
-      alert('删除失败: ' + e)
+      alert(t('msg.refDeleteFailed') + e)
     }
   }
 
@@ -286,7 +271,7 @@ export default function ProjectsPage() {
       const data = await projectRefDetail(p.id!, item.path)
       setDetail(data)
     } catch (e) {
-      alert('读取详情失败: ' + e)
+      alert(t('msg.detailFailed') + e)
     }
   }
 
@@ -294,7 +279,7 @@ export default function ProjectsPage() {
     try {
       await projectRefReveal(p.id!, item.path)
     } catch (e) {
-      alert('打开所在目录失败: ' + e)
+      alert(t('msg.revealFailed') + e)
     }
   }
 
@@ -302,7 +287,7 @@ export default function ProjectsPage() {
     try {
       await projectRefOpen(p.id!, item.path)
     } catch (e) {
-      alert('打开图片失败: ' + e)
+      alert(t('msg.openFailed') + e)
     }
   }
 
@@ -312,7 +297,7 @@ export default function ProjectsPage() {
       setPromptText(text)
       setPromptEditor({ id: p.id!, name: p.name })
     } catch (e) {
-      alert('读取提示词失败: ' + e)
+      alert(t('projects.loadPromptFailed') + e)
     }
   }
 
@@ -321,10 +306,10 @@ export default function ProjectsPage() {
     setPromptSaving(true)
     try {
       await projectPromptSet(promptEditor.id, promptText)
-      alert('已保存到项目根目录的 prompt.txt')
+      alert(t('projects.promptSaved'))
       setPromptEditor(null)
     } catch (e) {
-      alert('保存提示词失败: ' + e)
+      alert(t('projects.savePromptFailed') + e)
     } finally {
       setPromptSaving(false)
     }
@@ -338,7 +323,7 @@ export default function ProjectsPage() {
       const items = await projectTaskHistory(p.id!, 20)
       setHistoryItems(items)
     } catch (e) {
-      alert('读取生成历史失败: ' + e)
+      alert(t('projects.historyFailed') + e)
     } finally {
       setHistoryLoading(false)
     }
@@ -349,13 +334,13 @@ export default function ProjectsPage() {
       <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '16px' }}>{t('nav.projects')}</h2>
       <form onSubmit={handleCreate} style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
         <input
-          placeholder="项目名称（导入时可留空）"
+          placeholder={t('projects.placeholderName')}
           value={name}
           onChange={(e) => setName(e.target.value)}
           style={inputStyle}
         />
         <input
-          placeholder="项目根目录，例如 D:\\work\\my-project"
+          placeholder={t('projects.placeholderPath')}
           value={rootPath}
           onChange={(e) => setRootPath(e.target.value)}
           style={{ ...inputStyle, minWidth: '260px' }}
@@ -365,7 +350,7 @@ export default function ProjectsPage() {
           disabled={loading}
           style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: loading ? 'not-allowed' : 'pointer' }}
         >
-          {loading ? t('btn.create') + '...' : '新建项目'}
+          {loading ? t('btn.create') + '...' : t('btn.newProject')}
         </button>
         <button
           type="button"
@@ -373,21 +358,21 @@ export default function ProjectsPage() {
           disabled={loading}
           style={{ padding: '8px 16px', background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: '6px', cursor: loading ? 'not-allowed' : 'pointer' }}
         >
-          导入已有项目
+          {t('btn.import')}
         </button>
       </form>
       <p style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '12px' }}>
-        导入会复用已有目录：识别根目录下的 prompt.txt，并在缺失时补建 references、output 子目录，不会覆盖已有文件。
+        {t('projects.importHint')}
       </p>
 
       <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: '8px', overflow: 'hidden' }}>
         <thead>
           <tr style={{ background: '#f9fafb' }}>
             <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>ID</th>
-            <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>名称</th>
-            <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>根目录</th>
-            <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>参考图</th>
-            <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>操作</th>
+            <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('projects.tableName')}</th>
+            <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('projects.tableRoot')}</th>
+            <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('projects.tableReferences')}</th>
+            <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('projects.tableActions')}</th>
           </tr>
         </thead>
         <tbody>
@@ -405,22 +390,24 @@ export default function ProjectsPage() {
                   <td style={{ padding: '12px', fontSize: '12px', color: '#6b7280', wordBreak: 'break-all' }}>{p.root_path}</td>
                   <td style={{ padding: '12px' }}>
                     <button onClick={() => toggleExpand(p)} style={actionStyle}>
-                      {info ? `${info.total_images} 张 / ${info.folder_count} 个文件夹` : '查看'}
+                      {info
+                        ? t('projects.chartBars', { n: info.total_images, folders: info.folder_count })
+                        : t('btn.view')}
                       {expandedId === id ? ' ▲' : ' ▼'}
                     </button>
                   </td>
                   <td style={{ padding: '12px', whiteSpace: 'nowrap' }}>
                     <button onClick={() => handleOpenPrompt(p)} style={actionStyle}>
-                      提示词
+                      {t('btn.prompt')}
                     </button>
                     <button onClick={() => handleOpenHistory(p)} style={actionStyle}>
-                      历史
+                      {t('btn.history')}
                     </button>
                     <button onClick={() => handleOpenFolder(p)} style={actionStyle}>
-                      打开目录
+                      {t('btn.openFolder')}
                     </button>
                     <button onClick={() => handleRename(p)} style={actionStyle}>
-                      重命名
+                      {t('btn.rename')}
                     </button>
                     <button onClick={() => handleDelete(id)} style={dangerStyle}>
                       {t('btn.delete')}
@@ -431,38 +418,38 @@ export default function ProjectsPage() {
                   <tr style={{ borderBottom: '1px solid #e5e5e5', background: '#fbfbfb' }}>
                     <td colSpan={5} style={{ padding: '12px 16px' }}>
                       {!info ? (
-                        <span style={{ fontSize: '12px', color: '#9ca3af' }}>读取中…</span>
+                        <span style={{ fontSize: '12px', color: '#9ca3af' }}>{t('common.loading')}</span>
                       ) : (
                         <div>
                           <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap', marginBottom: '10px' }}>
                             <div style={{ fontSize: '12px', color: '#6b7280' }}>
-                              共 {info.total_images} 张，分布在 {info.folder_count} 个文件夹；每个文件夹独立参与抽取。
+                              {t('projects.chartSummary', { total: info.total_images, folders: info.folder_count })}
                             </div>
                             <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                               <input
-                                placeholder="筛选相对路径…"
+                                placeholder={t('projects.filteredPath')}
                                 value={refFilter[id] || ''}
                                 onChange={(e) => setRefFilter((prev) => ({ ...prev, [id]: e.target.value }))}
                                 style={{ padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '12px', width: '180px' }}
                               />
                               <button onClick={() => handleAddRefs(p)} style={{ ...actionStyle, marginRight: 0 }}>
-                                添加图片
+                                {t('btn.addImage')}
                               </button>
                               <button onClick={() => handleCreateSubfolder(p)} style={{ ...actionStyle, marginRight: 0 }}>
-                                新建子目录
+                                {t('btn.newSubfolder')}
                               </button>
                               <button onClick={() => refreshReferenceData(id)} style={{ ...actionStyle, marginRight: 0 }}>
-                                刷新
+                                {t('btn.refresh')}
                               </button>
                             </div>
                           </div>
                           {refLoading[id] ? (
-                            <div style={{ fontSize: '12px', color: '#9ca3af' }}>读取中…</div>
+                            <div style={{ fontSize: '12px', color: '#9ca3af' }}>{t('common.loading')}</div>
                           ) : visible.length === 0 ? (
                             <div style={{ fontSize: '12px', color: '#9ca3af' }}>
                               {items.length === 0
-                                ? `未找到参考图。请将 jpg/jpeg/png/webp 放入 ${info.references_root}。`
-                                : '没有匹配的图片。'}
+                                ? t('projects.noReferences', { root: info.references_root })
+                                : t('projects.noMatch')}
                             </div>
                           ) : (
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
@@ -485,23 +472,23 @@ export default function ProjectsPage() {
                                     {item.name}
                                   </div>
                                   <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '6px' }}>
-                                    {item.folder === '.' ? '根目录' : item.folder} · {formatBytes(item.size)}
+                                    {item.folder === '.' ? t('projects.folderRoot') : item.folder} · {formatBytes(item.size)}
                                   </div>
                                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                                     <button onClick={() => setPreview({ item, projectId: id })} style={{ ...actionStyle, fontSize: '11px', padding: '3px 6px', margin: 0 }}>
-                                      预览
+                                      {t('btn.preview')}
                                     </button>
                                     <button onClick={() => handleShowDetail(p, item)} style={{ ...actionStyle, fontSize: '11px', padding: '3px 6px', margin: 0 }}>
-                                      详情
+                                      {t('btn.details')}
                                     </button>
                                     <button onClick={() => handleOpenRef(p, item)} style={{ ...actionStyle, fontSize: '11px', padding: '3px 6px', margin: 0 }}>
-                                      打开
+                                      {t('btn.open')}
                                     </button>
                                     <button onClick={() => handleRevealRef(p, item)} style={{ ...actionStyle, fontSize: '11px', padding: '3px 6px', margin: 0 }}>
-                                      目录
+                                      {t('btn.folder')}
                                     </button>
                                     <button onClick={() => handleDeleteRef(p, item)} style={{ ...dangerStyle, fontSize: '11px', padding: '3px 6px', margin: 0 }}>
-                                      删除
+                                      {t('btn.delete')}
                                     </button>
                                   </div>
                                 </div>
@@ -519,7 +506,7 @@ export default function ProjectsPage() {
           {projects.length === 0 && (
             <tr>
               <td colSpan={5} style={{ padding: '24px', textAlign: 'center', color: '#9ca3af' }}>
-                暂无项目
+                {t('projects.none')}
               </td>
             </tr>
           )}
@@ -529,22 +516,22 @@ export default function ProjectsPage() {
       {history && (
         <div style={modalOverlay} onClick={() => setHistory(null)}>
           <div style={modalCard} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '4px' }}>生成历史 · {history.name}</h3>
-            <p style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '12px' }}>最近 20 个任务（按创建时间倒序）</p>
+            <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '4px' }}>{t('projects.historyTitle', { name: history.name })}</h3>
+            <p style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '12px' }}>{t('projects.historyNote')}</p>
             {historyLoading ? (
-              <div style={{ padding: '16px', fontSize: '12px', color: '#9ca3af' }}>读取中…</div>
+              <div style={{ padding: '16px', fontSize: '12px', color: '#9ca3af' }}>{t('common.loading')}</div>
             ) : historyItems.length === 0 ? (
-              <div style={{ padding: '16px', fontSize: '12px', color: '#9ca3af' }}>该项目还没有执行记录。</div>
+              <div style={{ padding: '16px', fontSize: '12px', color: '#9ca3af' }}>{t('projects.historyEmpty')}</div>
             ) : (
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
                 <thead>
                   <tr style={{ background: '#f9fafb' }}>
-                    <th style={{ padding: '8px', textAlign: 'left', color: '#6b7280' }}>任务</th>
-                    <th style={{ padding: '8px', textAlign: 'left', color: '#6b7280' }}>状态</th>
-                    <th style={{ padding: '8px', textAlign: 'left', color: '#6b7280' }}>轮次</th>
-                    <th style={{ padding: '8px', textAlign: 'left', color: '#6b7280' }}>成功图片</th>
-                    <th style={{ padding: '8px', textAlign: 'left', color: '#6b7280' }}>创建时间</th>
-                    <th style={{ padding: '8px', textAlign: 'left', color: '#6b7280' }}>完成时间</th>
+                    <th style={{ padding: '8px', textAlign: 'left', color: '#6b7280' }}>{t('tasks.nameHeader')}</th>
+                    <th style={{ padding: '8px', textAlign: 'left', color: '#6b7280' }}>{t('tasks.statusHeader')}</th>
+                    <th style={{ padding: '8px', textAlign: 'left', color: '#6b7280' }}>{t('roundDetail.tableRound')}</th>
+                    <th style={{ padding: '8px', textAlign: 'left', color: '#6b7280' }}>{t('projects.successImages')}</th>
+                    <th style={{ padding: '8px', textAlign: 'left', color: '#6b7280' }}>{t('projects.taskTimeCreated')}</th>
+                    <th style={{ padding: '8px', textAlign: 'left', color: '#6b7280' }}>{t('projects.taskTimeCompleted')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -563,7 +550,7 @@ export default function ProjectsPage() {
             )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
               <button onClick={() => setHistory(null)} style={{ ...actionStyle, marginRight: 0, padding: '8px 16px' }}>
-                关闭
+                {t('common.close')}
               </button>
             </div>
           </div>
@@ -573,26 +560,26 @@ export default function ProjectsPage() {
       {promptEditor && (
         <div style={modalOverlay} onClick={() => setPromptEditor(null)}>
           <div style={modalCard} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '8px' }}>提示词 · {promptEditor.name}</h3>
+            <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '8px' }}>{t('projects.promptTitle', { name: promptEditor.name })}</h3>
             <p style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '12px' }}>
-              保存后会写入项目根目录的 prompt.txt，之后每轮生图都会重新读取。
+              {t('projects.promptSaveNote')}
             </p>
             <textarea
               value={promptText}
               onChange={(e) => setPromptText(e.target.value)}
-              placeholder="输入生图提示词…"
+              placeholder={t('projects.promptPlaceholder')}
               style={{ width: '100%', minHeight: '220px', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px', lineHeight: 1.6, resize: 'vertical', boxSizing: 'border-box' }}
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '12px' }}>
               <button onClick={() => setPromptEditor(null)} style={{ ...actionStyle, marginRight: 0, padding: '8px 16px' }}>
-                取消
+                {t('common.cancel')}
               </button>
               <button
                 onClick={handleSavePrompt}
                 disabled={promptSaving}
                 style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: promptSaving ? 'not-allowed' : 'pointer' }}
               >
-                {promptSaving ? '保存中…' : '保存'}
+                {promptSaving ? t('common.saving') : t('btn.save')}
               </button>
             </div>
           </div>
@@ -615,7 +602,7 @@ export default function ProjectsPage() {
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '10px' }}>
               <button onClick={() => setPreview(null)} style={{ ...actionStyle, marginRight: 0, padding: '8px 16px' }}>
-                关闭
+                {t('common.close')}
               </button>
             </div>
           </div>
@@ -625,14 +612,14 @@ export default function ProjectsPage() {
       {detail && (
         <div style={modalOverlay} onClick={() => setDetail(null)}>
           <div style={{ ...modalCard, width: 'min(640px, 94vw)' }} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '8px' }}>图片详情 · {detail.name}</h3>
+            <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '8px' }}>{t('projects.detailTitle', { name: detail.name })}</h3>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
               <tbody>
                 {[
-                  ['路径', detail.path],
-                  ['相对位置', detail.relative_path],
-                  ['大小', formatBytes(detail.size)],
-                  ['修改时间', detail.modified || '—'],
+                  [t('details.path'), detail.path],
+                  [t('details.relativePath'), detail.relative_path],
+                  [t('details.size'), formatBytes(detail.size)],
+                  [t('details.modified'), detail.modified || '—'],
                   ['SHA-256', detail.sha256],
                 ].map(([label, value]) => (
                   <tr key={label as string} style={{ borderBottom: '1px solid #f0f0f0' }}>
@@ -644,7 +631,7 @@ export default function ProjectsPage() {
             </table>
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
               <button onClick={() => setDetail(null)} style={{ ...actionStyle, marginRight: 0, padding: '8px 16px' }}>
-                关闭
+                {t('common.close')}
               </button>
             </div>
           </div>
