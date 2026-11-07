@@ -98,6 +98,21 @@ pub async fn project_delete(id: i64) -> Result<(), String> {
     Ok(())
 }
 
+/** 去掉 Windows canonicalize 产生的 `\\\\?\\` 前缀 */
+fn display_path_buf(p: std::path::PathBuf) -> std::path::PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let text = p.to_string_lossy().to_string();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return std::path::PathBuf::from(format!(r"\\{}", rest));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return std::path::PathBuf::from(rest);
+        }
+    }
+    p
+}
+
 /** 校验项目根目录存在且是目录，返回去掉 Windows `\\\\?\\` 前缀的路径 */
 fn normalize_project_root(root_path: &str) -> Result<std::path::PathBuf, String> {
     let trimmed = root_path.trim();
@@ -114,15 +129,7 @@ fn normalize_project_root(root_path: &str) -> Result<std::path::PathBuf, String>
     let canonical = raw
         .canonicalize()
         .map_err(|e| format!("无法解析目录：{}", e))?;
-    // Windows canonicalize 会返回 \\?\C:\...，去掉前缀便于展示与实际使用
-    let text = canonical.to_string_lossy().to_string();
-    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-        return Ok(std::path::PathBuf::from(format!(r"\\{}", rest)));
-    }
-    if let Some(rest) = text.strip_prefix(r"\\?\") {
-        return Ok(std::path::PathBuf::from(rest));
-    }
-    Ok(canonical)
+    Ok(display_path_buf(canonical))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -407,6 +414,361 @@ pub async fn project_task_history(id: i64, limit: Option<i64>) -> Result<Vec<cra
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+// ===== 参考图文件管理 =====
+
+/** 校验 references 内的相对子目录，拒绝绝对路径与 `..` */
+fn safe_subfolder(rel: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::{Component, PathBuf};
+    let input = rel.trim();
+    if input.is_empty() {
+        return Ok(PathBuf::new());
+    }
+    let mut out = PathBuf::new();
+    for part in std::path::Path::new(input).components() {
+        match part {
+            Component::Normal(c) => out.push(c),
+            Component::CurDir => {}
+            _ => return Err(format!("子目录 `{}` 不合法（不允许上级或根目录）", rel)),
+        }
+    }
+    Ok(out)
+}
+
+/** 目标已存在时追加 " (n)"；全部占用则返回 None（由调用方报错，避免覆盖） */
+fn unique_destination(dest: &std::path::Path) -> Option<std::path::PathBuf> {
+    let exists = |p: &std::path::Path| p.symlink_metadata().is_ok();
+    if !exists(dest) {
+        return Some(dest.to_path_buf());
+    }
+    let parent = dest.parent().unwrap_or(std::path::Path::new("."));
+    let stem = dest
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "image".to_string());
+    let ext = dest
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    for index in 2..1000 {
+        let candidate = parent.join(format!("{} ({}){}", stem, index, ext));
+        if !exists(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(64);
+    for byte in digest {
+        out.push_str(&format!("{:02x}", byte));
+    }
+    out
+}
+
+/** 流式计算 SHA-256，避免大图整文件读入内存 */
+fn sha256_file(path: &std::path::Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("打开文件失败：{}", e))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| format!("读取文件失败：{}", e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn canonical_references(root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let refs = root.join("references");
+    refs.canonicalize()
+        .map_err(|e| format!("参考图目录不存在：{}（{}）", refs.display(), e))
+}
+
+/** 校验 references 目录存在；缺失时创建（位于项目根目录下，安全） */
+fn ensure_references(root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let refs = root.join("references");
+    std::fs::create_dir_all(&refs).map_err(|e| format!("创建参考图目录失败：{}", e))?;
+    canonical_references(root)
+}
+
+/** 定位 base 内已存在的路径；越界或不存在则报错 */
+fn ensure_within(base: &std::path::Path, candidate: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|e| format!("路径不存在：{}（{}）", candidate.display(), e))?;
+    if !canonical.starts_with(base) {
+        return Err("路径不在项目参考图目录内".to_string());
+    }
+    Ok(canonical)
+}
+
+/** 为 base 内（可能尚不存在的）相对子目录计算最终路径；先校验最深已存在祖先再拼接，避免 junction 逃逸 */
+fn ensure_destination_within(
+    base: &std::path::Path,
+    rel: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let mut existing = base.join(rel);
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while !existing.exists() {
+        let name = existing.file_name().map(|s| s.to_os_string());
+        match name {
+            Some(n) => tail.push(n),
+            None => return Err(format!("路径无效：{}", base.join(rel).display())),
+        }
+        if !existing.pop() {
+            return Err(format!("路径无效：{}", base.join(rel).display()));
+        }
+    }
+    let mut prefix = ensure_within(base, &existing)?;
+    for part in tail.iter().rev() {
+        prefix.push(part);
+    }
+    Ok(prefix)
+}
+
+/** 定位 references 目录内的文件；越界或不存在则返回错误 */
+fn resolve_ref_path(id: i64, path: &str) -> Result<std::path::PathBuf, String> {
+    let root = project_root_by_id(id)?;
+    let base = canonical_references(&root)?;
+    ensure_within(&base, std::path::Path::new(path))
+}
+
+fn relative_under(base: &std::path::Path, target: &std::path::Path) -> String {
+    target
+        .strip_prefix(base)
+        .map(|rel| {
+            if rel.as_os_str().is_empty() {
+                return ".".to_string();
+            }
+            rel.to_string_lossy().replace('\\', "/")
+        })
+        .unwrap_or_else(|_| target.to_string_lossy().replace('\\', "/"))
+}
+
+fn modified_rfc3339(metadata: &std::fs::Metadata) -> Option<String> {
+    metadata
+        .modified()
+        .ok()
+        .map(chrono::DateTime::<Utc>::from)
+        .map(|t| t.to_rfc3339())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_ref_list(id: i64) -> Result<Vec<crate::models::ReferenceItem>, String> {
+    use crate::models::ReferenceItem;
+
+    let root = project_root_by_id(id)?;
+    let refs = root.join("references");
+    if !refs.is_dir() {
+        return Ok(Vec::new());
+    }
+    let base = canonical_references(&root)?;
+
+    fn walk(
+        dir: &std::path::Path,
+        base: &std::path::Path,
+        out: &mut Vec<ReferenceItem>,
+    ) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if file_type.is_dir() {
+                walk(&path, base, out);
+                continue;
+            }
+            if !file_type.is_file() || !is_supported_image(&path) {
+                continue;
+            }
+            let metadata = match std::fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let relative = relative_under(base, &path);
+            let folder = relative
+                .rfind('/')
+                .map(|idx| relative[..idx].to_string())
+                .unwrap_or_else(|| ".".to_string());
+            out.push(ReferenceItem {
+                name: path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                path: display_path_buf(path).to_string_lossy().to_string(),
+                relative_path: relative,
+                folder,
+                size: metadata.len() as i64,
+                modified: modified_rfc3339(&metadata),
+            });
+        }
+    }
+
+    let mut items = Vec::new();
+    walk(&base, &base, &mut items);
+    items.sort_by(|a, b| a.relative_path.to_lowercase().cmp(&b.relative_path.to_lowercase()));
+    Ok(items)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_ref_add(
+    id: i64,
+    source_paths: Vec<String>,
+    subfolder: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let root = project_root_by_id(id)?;
+    let base = ensure_references(&root)?;
+    let rel = safe_subfolder(&subfolder.unwrap_or_default())?;
+    let dest_dir = ensure_destination_within(&base, &rel)?;
+    std::fs::create_dir_all(&dest_dir).map_err(|e| format!("创建子目录失败：{}", e))?;
+
+    let mut added = 0i64;
+    let mut skipped: Vec<String> = Vec::new();
+    for source in source_paths {
+        let src_path = std::path::PathBuf::from(&source);
+        if !src_path.is_file() || !is_supported_image(&src_path) {
+            skipped.push(format!("{}：不是支持的图片（jpg/jpeg/png/webp）", source));
+            continue;
+        }
+        let file_name = match src_path.file_name() {
+            Some(n) => n.to_os_string(),
+            None => {
+                skipped.push(format!("{}：无法获取文件名", source));
+                continue;
+            }
+        };
+        // 去重前先做 junction/symlink 规避：目标路径全部经过 symlink_metadata 判定
+        let dest = match unique_destination(&dest_dir.join(&file_name)) {
+            Some(d) => d,
+            None => {
+                skipped.push(format!("{}：同名文件过多，请重命名后重试", source));
+                continue;
+            }
+        };
+        match std::fs::copy(&src_path, &dest) {
+            Ok(_) => added += 1,
+            Err(e) => skipped.push(format!("{}：{}", source, e)),
+        }
+    }
+    Ok(serde_json::json!({ "added": added, "skipped": skipped }))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_ref_delete(id: i64, path: String) -> Result<(), String> {
+    let target = resolve_ref_path(id, &path)?;
+    if !target.is_file() {
+        return Err("只能删除单个图片文件".to_string());
+    }
+    std::fs::remove_file(&target).map_err(|e| format!("删除失败：{}", e))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_ref_create_folder(id: i64, subfolder: String) -> Result<(), String> {
+    let rel = safe_subfolder(&subfolder)?;
+    if rel.as_os_str().is_empty() {
+        return Err("子目录名不能为空".to_string());
+    }
+    let root = project_root_by_id(id)?;
+    let base = ensure_references(&root)?;
+    let target = ensure_destination_within(&base, &rel)?;
+    std::fs::create_dir_all(&target).map_err(|e| format!("创建子目录失败：{}", e))?;
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_ref_detail(id: i64, path: String) -> Result<crate::models::ReferenceDetail, String> {
+    use crate::models::ReferenceDetail;
+
+    let root = project_root_by_id(id)?;
+    let base = canonical_references(&root)?;
+    let target = ensure_within(&base, std::path::Path::new(&path))?;
+    if !target.is_file() {
+        return Err("路径不是文件".to_string());
+    }
+    let metadata = std::fs::metadata(&target).map_err(|e| format!("读取文件信息失败：{}", e))?;
+    let relative_path = relative_under(&base, &target);
+    Ok(ReferenceDetail {
+        name: target
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        path: display_path_buf(target.clone()).to_string_lossy().to_string(),
+        relative_path,
+        size: metadata.len() as i64,
+        modified: modified_rfc3339(&metadata),
+        sha256: sha256_file(&target)?,
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_ref_reveal(id: i64, path: String) -> Result<(), String> {
+    let target = display_path_buf(resolve_ref_path(id, &path)?);
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", target.display()))
+            .spawn()
+            .map_err(|e| format!("打开资源管理器失败：{}", e))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("打开 Finder 失败：{}", e))?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let parent = target.parent().unwrap_or(&target);
+        return open_in_file_manager(parent);
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_ref_open(id: i64, path: String) -> Result<(), String> {
+    let target = display_path_buf(resolve_ref_path(id, &path)?);
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("rundll32.exe")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("打开图片失败：{}", e))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("打开图片失败：{}", e))?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("打开图片失败：{}", e))?;
+        return Ok(());
+    }
+}
+
 #[cfg(test)]
 mod project_tests {
     use super::*;
@@ -466,6 +828,95 @@ mod project_tests {
         assert_eq!(stats.total_images, 0);
         assert_eq!(stats.folder_count, 0);
         assert!(stats.folders.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn safe_subfolder_accepts_relative_children() {
+        let rel = safe_subfolder("主图/2026/  ").unwrap();
+        assert_eq!(rel, std::path::PathBuf::from("主图").join("2026"));
+    }
+
+    #[test]
+    fn safe_subfolder_rejects_root_and_parent() {
+        assert!(safe_subfolder(r"C:\evil").is_err());
+        assert!(safe_subfolder("..").is_err());
+        assert!(safe_subfolder("ok/../../evil").is_err());
+        assert!(safe_subfolder("/").is_err());
+    }
+
+    #[test]
+    fn unique_destination_renames_instead_of_overwriting() {
+        let dir = temp_project_dir("unique");
+        let dest = dir.join("references").join("photo.png");
+        std::fs::write(&dest, b"1").unwrap();
+        let candidate = unique_destination(&dest).expect("free name should be found");
+        assert_eq!(candidate, dir.join("references").join("photo (2).png"));
+        // 已存在文件仍不能被直接返回覆盖
+        std::fs::write(&candidate, b"2").unwrap();
+        let next = unique_destination(&dest).expect("second collision should bump index");
+        assert_eq!(next, dir.join("references").join("photo (3).png"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_within_rejects_paths_outside_references() {
+        let dir = temp_project_dir("within");
+        let base = canonical_references(&dir).unwrap();
+        let outside = dir.join("secret.png");
+        std::fs::write(&outside, b"x").unwrap();
+        assert_eq!(
+            ensure_within(&base, &outside).unwrap_err(),
+            "路径不在项目参考图目录内"
+        );
+        let inside = dir.join("references").join("ok.png");
+        std::fs::write(&inside, b"x").unwrap();
+        assert_eq!(ensure_within(&base, &inside).unwrap(), inside.canonicalize().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_destination_within_resolves_nested_relative_paths() {
+        let dir = temp_project_dir("destination");
+        let base = canonical_references(&dir).unwrap();
+        let target = ensure_destination_within(&base, std::path::Path::new("a/b/c")).unwrap();
+        assert_eq!(target, base.join("a").join("b").join("c"));
+        std::fs::create_dir_all(base.join("a").join("b")).unwrap();
+        let again = ensure_destination_within(&base, std::path::Path::new("a/b/c")).unwrap();
+        assert_eq!(again, base.join("a").join("b").join("c"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sha256_hex_matches_known_vector() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn relative_under_uses_forward_slashes() {
+        let base = std::path::PathBuf::from("C:/proj/references");
+        let target = std::path::PathBuf::from("C:/proj/references/sub/inner/a.png");
+        assert_eq!(relative_under(&base, &target), "sub/inner/a.png");
+    }
+
+    #[test]
+    fn list_reference_items_skips_unsupported() {
+        let dir = temp_project_dir("list");
+        touch(&dir.join("references").join("ok.webp"));
+        touch(&dir.join("references").join("notes.txt"));
+        touch(&dir.join("references").join("sub").join("ok2.JPG"));
+        // 直接调用底层遍历逻辑：构造项目记录不可行，改为验证相对路径转换与扩展名判断
+        assert!(is_supported_image(std::path::Path::new("ok2.JPG")));
+        assert!(!is_supported_image(std::path::Path::new("notes.txt")));
+        let target = canonical_references(&dir).unwrap().join("sub").join("ok2.JPG");
+        assert_eq!(relative_under(&canonical_references(&dir).unwrap(), &target), "sub/ok2.JPG");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

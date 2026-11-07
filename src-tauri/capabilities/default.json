@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default permissions for the app window",
   "windows": ["*"],
-  "permissions": ["core:default", "updater:default"]
+  "permissions": ["core:default", "updater:default", "dialog:default"]
 }

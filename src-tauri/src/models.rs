@@ -99,6 +99,28 @@ pub struct ProjectHistoryItem {
     pub completed_at: Option<String>,
 }
 
+/// 单张参考图（位于项目 references 目录内）
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ReferenceItem {
+    pub name: String,
+    pub path: String,
+    pub relative_path: String,
+    /// 相对 references 根目录的子文件夹，根目录为 "."
+    pub folder: String,
+    pub size: i64,
+    pub modified: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ReferenceDetail {
+    pub name: String,
+    pub path: String,
+    pub relative_path: String,
+    pub size: i64,
+    pub modified: Option<String>,
+    pub sha256: String,
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Setting {

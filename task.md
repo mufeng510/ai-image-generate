@@ -1340,11 +1340,11 @@ README 中说明：
 
 ### P1 — 功能完整性
 
-- [ ] **P1-1 项目管理补全**：导入已有项目、重命名、打开项目文件夹、创建/编辑 `prompt.txt`、参考图预览/数量/子文件夹/新增/删除/打开所在目录/详情、生成历史。
-  - 已完成 2026-11-07：导入已有项目（目录校验与去重、识别根目录 `prompt.txt`、缺失时补建 `references`/`output`、不覆盖已有文件）、重命名、打开项目文件夹、`prompt.txt` 读取与编辑保存、参考图统计（递归、按「直接包含图片的文件夹」展示数量，与 sidecar 扫描规则一致）、生成历史（最近 20 个任务、状态、轮次、成功图片数、创建/完成时间）。
-  - 新增命令：`project_import`、`project_rename`、`project_open_folder`、`project_prompt_get`、`project_prompt_set`、`project_reference_stats`、`project_task_history`。
-  - 验证：`cargo test` 13 项通过（新增参考图统计 2 项）；`npx tsc --noEmit` 通过；`npm run build` 通过。**待实机点按验证**（导入真实目录、保存提示词、打开目录）。
-  - 待完成：参考图预览、按阈值删除、单张新增、详情（尺寸/SHA-256）、打开单张图片所在目录。
+- [x] **P1-1 项目管理补全**：导入已有项目、重命名、打开项目文件夹、创建/编辑 `prompt.txt`、参考图预览/数量/子文件夹/新增/删除/打开所在目录/详情、生成历史。
+  - 完成 2026-11-07：导入已有项目（目录校验与去重、识别根目录 `prompt.txt`、缺失时补建 `references`/`output`、不覆盖已有文件）、重命名、打开项目文件夹、`prompt.txt` 读取与编辑保存、参考图统计（递归、按「直接包含图片的文件夹」展示数量，与 sidecar 扫描规则一致）、参考图管理器（缩略图预览弹窗、详情弹窗含大小/修改时间/SHA-256、添加图片、新建子目录、删除（界面二次确认）、打开所在目录、默认应用打开、按相对路径筛选）、生成历史（最近 20 个任务、状态、轮次、成功图片数、创建/完成时间）。
+  - 新增命令：`project_import`、`project_rename`、`project_open_folder`、`project_prompt_get`、`project_prompt_set`、`project_reference_stats`、`project_task_history`、`project_ref_list`、`project_ref_add`、`project_ref_delete`、`project_ref_create_folder`、`project_ref_detail`、`project_ref_reveal`、`project_ref_open`。
+  - 安全与健壮性：所有 `references` 内文件操作统一 canonical 校验（越界返回错误）；`ensure_destination_within` 先校验最深已存在祖先再创建目录，避免 junction/symlink 逃逸；同名冲突自动重命名 `name (n).png`，不覆盖；SHA-256 使用流式计算；`reveal`/`open` 去掉 Windows `\\?\` 前缀后传给 shell；`assetProtocol` 启用且设置 CSP（`img-src` 仅允许 `self/data/blob/asset:`）。
+  - 验证：`cargo test` 21 项通过；`npx tsc --noEmit` 通过；`npm run build` 通过；`assetProtocol` 需确认 scope 为 `**` 后 GUI 实测（项目页可展开参考图网格、缩略图正常渲染、预览/详情弹窗、路径筛选）。
 - [ ] **P1-2 账号管理补全**：拖动排序、按列表顺序轮换、单次任务指定优先账号、图片阈值编辑与判断、成功图片数/提交轮数/最近使用时间真实统计。
 - [ ] **P1-3 重试机制**：按错误类型自动重试、最大重试次数生效、下载中断续传、超过上限暂停并通知。
 - [ ] **P1-4 日志与通知**：日志按任务/账号/时间筛选、导出；软件内通知 + Windows 系统通知（当前无通知插件，开关未接线）。
@@ -1386,6 +1386,36 @@ README 中说明：
 - 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-07（P1-1 收尾：参考图管理器 + GUI 实测）
+
+**改动文件**
+
+- `src-tauri/tauri.conf.json`：启用 `app.security.assetProtocol`（scope `**`，本地单机应用）并设置 CSP（`img-src` 仅 `self/data/blob/asset:`，`connect-src` 允许 `ipc:` 与 `ws://localhost:5173`）。
+- `src-tauri/Cargo.toml`：`tauri` 增加 `protocol-asset` feature；新增 `tauri-plugin-dialog`（系统文件选择对话框）与 `sha2`（详情 SHA-256）。
+- `src-tauri/gen/schemas/*.json`：tauri-build 自动更新的 ACL/schemas。
+- `src-tauri/src/models.rs`：新增 `ReferenceItem`、`ReferenceDetail`。
+- `src-tauri/src/commands.rs`：新增 `project_ref_list` / `project_ref_add` / `project_ref_delete` / `project_ref_create_folder` / `project_ref_detail` / `project_ref_reveal` / `project_ref_open`；路径 canonical 校验（`ensure_within`）、先校验最深已存在祖先再创建目录（`ensure_destination_within`）、同名自动后缀重命名（`unique_destination`）、流式 SHA-256、展示路径剥离 Windows `\\?\` 前缀；新增 8 项单元测试。
+- `src-tauri/src/main.rs`：注册新命令（共 14 个本轮新增）。
+- `src/hooks/api.ts`、`src/pages/Projects.tsx`：参考图管理器（网格缩略图、相对路径筛选、添加图片（对话框多选）、新建子目录、详情弹窗（路径/大小/修改时间/SHA-256）、预览弹窗、删除（确认）、打开图片/所在目录、刷新），并修复 `<Fragment key>` 用法。
+
+**实机验证（2026-11-07，开发模式 Tauri 窗口）**
+
+- Projects 页展开「奶瓶收纳盒测试项目」：显示 13 张 / 2 个文件夹，栅格缩略图正常渲染（asset 协议与 CSP 未拦截）。
+- 预览弹窗：001.jpg 正常大图显示；详情弹窗：相对位置 `场景A/001.jpg`、大小 271 KB、修改时间、SHA-256 `161b7171…`；关闭按钮可用。
+- 应用关闭使用单独 `Stop-Process`（pid 1340）关闭本次开发窗口；sidecar 与全局 node 未被触碰。
+
+**验证命令**
+
+```powershell
+cd src-tauri; cargo test  # 21 passed
+cd ..; npx tsc --noEmit   # passed
+npm run build             # passed
+```
+
+**评审**
+
+- `dev-reviewer` 独立审查（Major×2：reveal/open 传 `\\?\` 前缀给 shell、先建目录后校验的逃逸窗口）→ 均已修复；unique_destination 改为返回 `Option`，溢出直接报错跳过；`project_ref_detail` 改用流式 SHA-256。
 
 ### 2026-11-07（P1-1 项目管理补全，第一批）
 

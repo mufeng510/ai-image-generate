@@ -33,6 +33,24 @@ export interface ProjectHistoryItem {
   completed_at?: string
 }
 
+export interface ReferenceItem {
+  name: string
+  path: string
+  relative_path: string
+  folder: string
+  size: number
+  modified?: string
+}
+
+export interface ReferenceDetail {
+  name: string
+  path: string
+  relative_path: string
+  size: number
+  modified?: string
+  sha256: string
+}
+
 export interface Account {
   id?: number
   name: string
@@ -150,6 +168,34 @@ export async function projectReferenceStats(id: number): Promise<ProjectReferenc
 
 export async function projectTaskHistory(id: number, limit = 20): Promise<ProjectHistoryItem[]> {
   return invoke('project_task_history', { id, limit })
+}
+
+export async function projectRefList(id: number): Promise<ReferenceItem[]> {
+  return invoke('project_ref_list', { id })
+}
+
+export async function projectRefAdd(id: number, source_paths: string[], subfolder?: string | null): Promise<{ added: number; skipped: string[] }> {
+  return invoke('project_ref_add', { id, source_paths, subfolder: subfolder ?? null })
+}
+
+export async function projectRefDelete(id: number, path: string): Promise<void> {
+  return invoke('project_ref_delete', { id, path })
+}
+
+export async function projectRefCreateFolder(id: number, subfolder: string): Promise<void> {
+  return invoke('project_ref_create_folder', { id, subfolder })
+}
+
+export async function projectRefDetail(id: number, path: string): Promise<ReferenceDetail> {
+  return invoke('project_ref_detail', { id, path })
+}
+
+export async function projectRefReveal(id: number, path: string): Promise<void> {
+  return invoke('project_ref_reveal', { id, path })
+}
+
+export async function projectRefOpen(id: number, path: string): Promise<void> {
+  return invoke('project_ref_open', { id, path })
 }
 
 export async function accountList(): Promise<Account[]> {

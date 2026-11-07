@@ -15,6 +15,7 @@ fn main() {
     Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .manage(scheduler)
         .invoke_handler(tauri::generate_handler![
             commands::project_list,
@@ -27,6 +28,13 @@ fn main() {
             commands::project_prompt_set,
             commands::project_reference_stats,
             commands::project_task_history,
+            commands::project_ref_list,
+            commands::project_ref_add,
+            commands::project_ref_delete,
+            commands::project_ref_create_folder,
+            commands::project_ref_detail,
+            commands::project_ref_reveal,
+            commands::project_ref_open,
             commands::project_get,
             commands::account_list,
             commands::account_add,
