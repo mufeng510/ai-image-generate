@@ -7,6 +7,8 @@ export default function SettingsPage() {
   const { lang, setLang } = useI18n()
   const [projectRoot, setProjectRoot] = useState('')
   const [maxRetries, setMaxRetries] = useState('3')
+  const [confirmSelection, setConfirmSelection] = useState(false)
+  const [confirmBeforeSubmit, setConfirmBeforeSubmit] = useState(false)
   const [checking, setChecking] = useState(false)
   const [installing, setInstalling] = useState(false)
   const [update, setUpdate] = useState<Update | null>(null)
@@ -16,6 +18,10 @@ export default function SettingsPage() {
     if (v) setProjectRoot(v)
     const m = await settingsGet('max_retries')
     if (m) setMaxRetries(m)
+    const cs = await settingsGet('confirm_selection')
+    setConfirmSelection(cs === 'true')
+    const cb = await settingsGet('confirm_before_submit')
+    setConfirmBeforeSubmit(cb === 'true')
   }
 
   useEffect(() => {
@@ -66,6 +72,15 @@ export default function SettingsPage() {
     }
   }
 
+  async function toggleSetting(key: string, value: boolean, setVal: (v: boolean) => void) {
+    try {
+      await settingsSet(key, value ? 'true' : 'false')
+      setVal(value)
+    } catch (e) {
+      alert('保存失败: ' + e)
+    }
+  }
+
   return (
     <div style={{ padding: '24px' }}>
       <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '24px' }}>设置</h2>
@@ -108,6 +123,29 @@ export default function SettingsPage() {
             />
             <label htmlFor='notify' style={{ fontSize: '13px', color: '#1a1a1a', cursor: 'pointer' }}>
               启用任务状态变更通知
+            </label>
+          </div>
+        </div>
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>人工确认模式</label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+              <input
+                type='checkbox'
+                checked={confirmSelection}
+                onChange={(e) => toggleSetting('confirm_selection', e.target.checked, setConfirmSelection)}
+                style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+              />
+              抽图后暂停，确认参考图后再上传
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+              <input
+                type='checkbox'
+                checked={confirmBeforeSubmit}
+                onChange={(e) => toggleSetting('confirm_before_submit', e.target.checked, setConfirmBeforeSubmit)}
+                style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+              />
+              上传参考图并填写提示词后暂停，确认后再提交
             </label>
           </div>
         </div>

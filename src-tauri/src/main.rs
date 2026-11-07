@@ -20,6 +20,13 @@ fn main() {
             commands::project_list,
             commands::project_create,
             commands::project_delete,
+            commands::project_import,
+            commands::project_rename,
+            commands::project_open_folder,
+            commands::project_prompt_get,
+            commands::project_prompt_set,
+            commands::project_reference_stats,
+            commands::project_task_history,
             commands::project_get,
             commands::account_list,
             commands::account_add,
@@ -46,6 +53,10 @@ fn main() {
         ])
         .setup(|app| {
             let _ = db::init_db();
+            // 启动恢复：不自动执行上次未完成任务，标记为需人工处理并保留原状态
+            if let Err(e) = task_scheduler::recover_interrupted_tasks() {
+                eprintln!("[启动] 恢复未完成任务失败: {}", e);
+            }
             // 在闭包外克隆 Arc 和 AppHandle，避免借用逃离
             let app_handle = app.app_handle().clone();
             let scheduler = app.state::<Arc<Scheduler>>().inner().clone();

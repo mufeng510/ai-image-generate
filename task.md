@@ -1287,3 +1287,156 @@ README 中说明：
 **最终目标不是做一个只能演示的自动化脚本，而是做一个长期可用、出现问题能够恢复、用户可以观察和控制的 Windows 桌面软件。**
 
 请先从 Phase 0 开始，不要跳过技术验证直接开发完整应用。
+
+---
+
+# 二十三、开发进度追踪
+
+> 本清单由 2026-11-07 代码核查生成，作为后续开发的跟踪依据。
+> 图例：✅ 已完成 / 🟡 部分完成 / ❌ 未开始 / ⛔ 阻塞（缺少外部条件）
+> 更新规则：每完成一项，勾选并补充「完成日期 / 关键文件 / 验证命令」；不允许未经验证标记完成。
+
+## 23.1 已完成
+
+- [x] **技术验证报告**：`docs/TECHNICAL_VALIDATION.md` 完成油猴脚本分析、原图提取方案、Playwright 持久化、打包方案与风险评估。
+- [x] **单轮生图主链路**：可见 Chromium → 抽 5 张图 → 上传 → 输入提示词 → 提交 → 识别生成 → 提取原图 → 下载校验；2026-11-03 有真实账号实测记录（`docs/TESTING.md`）。
+- [x] **参考图片扫描**：递归扫描 JPG/JPEG/PNG/WEBP，按“直接包含图片的文件夹”独立参与抽取（`sidecar/src/scanner.js`）。
+- [x] **持久化随机池**：路径 + SHA-256 识别、已用图片优先排除、删除图片裁剪（`sidecar/src/pool.js`）。
+- [x] **每轮抽取 5 张**：文件夹超过 5 个随机选 5 个；不足 5 个先每文件夹一张，再从剩余补足；总量不足才重复（`sidecar/src/scanner.js`）。
+- [x] **提示词快照**：每轮开始读取 `prompt.txt`，本轮内固定，快照写入 `task_rounds.prompt_snapshot`（`task_scheduler.rs`）。
+- [x] **原图提取与下载校验**：优先 `image_ori_raw`，DOM 兜底；按文件魔数保留真实格式；SHA-256、大小、内容完整性校验（`sidecar/src/index.js`、`sidecar/src/downloader.js`）。
+- [x] **任务串行调度**：同一时间只允许一个任务占用浏览器；状态写入数据库并广播事件（`src-tauri/src/task_scheduler.rs`）。
+- [x] **安全恢复基线**：状态不明时不直接重新提交；`resume_generate` 先检查页面是否已有生成图/已提交/未发送（`task_scheduler.rs`、`sidecar/src/index.js`）。
+- [x] **基础数据库**：projects / accounts / tasks / task_rounds / task_images / image_pool_records / execution_logs / app_settings 八张表与常用索引（`src-tauri/src/schema.rs`）。
+- [x] **基础界面**：仪表盘、项目、账号、任务队列、任务详情、日志、设置七个页面（`src/pages/`）。
+- [x] **安装包与更新配置**：NSIS 安装包可生成；updater 公钥、GitHub Release 端点、发布工作流已配置（`src-tauri/tauri.conf.json`、`.github/workflows/release.yml`）。
+- [x] **项目文档**：README / README_EN / ARCHITECTURE / TECHNICAL_VALIDATION / DEVELOPMENT / TESTING / USER_GUIDE / CHANGELOG 八份齐全。
+- [x] **现有单元测试**：提取器 15、下载器 18、Sidecar 下载器 9、随机池 5、Rust 5，共 52 个，全部通过。
+
+## 23.2 未完成
+
+### P0 — 阻断最终验收
+
+- [ ] **P0-1 内置运行时**：安装包必须自带 Node.js 与 Playwright Chromium，用户不得被要求自行安装（当前 `README.md:39`、`docs/USER_GUIDE.md:7-8` 仍要求用户安装）。
+- [x] **P0-2 安全暂停/取消**：暂停、取消必须真正停止正在执行的自动化；继续执行不得在状态不明时重复提交。
+  - 完成 2026-11-07：`Scheduler` 增加控制状态（`Running/PauseRequested/CancelRequested`），`wait_result` 每秒检查并在中断时返回 `Interrupted`；`tasks.rs` 暂停/取消会向 sidecar 发送 `{"cmd":"abort"}`（仅当该任务正在执行时）；sidecar 在等待生成、上传前、提交前、下载循环检查中止标记，下载循环中断时保留已下载文件；继续执行统一走 `resume_task` 的页面状态探测。
+  - 验证：`cargo test` 8 项通过；`node --check sidecar/src/index.js` 通过。**待真实浏览器复测**（暂停后不再提交、取消保留文件）。
+- [x] **P0-3 启动恢复**：软件启动后不得自动执行上次未完成任务；应展示未完成任务、上次状态，并由用户手动恢复。
+  - 完成 2026-11-07：新增 `recover_interrupted_tasks()`（`main.rs` 启动时调用），把上次执行中的任务标记为 `needs_manual_intervention` 并写入 `interrupted_status`，未完成轮次标记为 `paused`；调度器增加 `auto_run` 闸门，启动后为 `false`，只有用户点击「开始/继续」才启用；任务列表显示「上次：生成中」等原状态。
+  - 验证：`cargo test` 8 项通过；`npm run build` 通过。**待重启实测**（不会自动跑、原状态可见）。
+- [ ] **P0-4 生图参数**：全局默认参数、项目覆盖参数、参数继承；只实现经真实网页验证的参数（当前完全缺失）。
+- [x] **P0-5 人工确认模式**：抽图后、提交前、上传后三个确认节点；`waiting_confirmation` 状态落地。
+  - 完成 2026-11-07：设置页新增「人工确认模式」两个开关（`confirm_selection`、`confirm_before_submit`）。确认节点写入 `waiting_confirmation` + `interrupted_status`（`confirm_selection` / `confirm_before_submit`），执行线程安全退出；用户点「继续执行」后：
+    - `confirm_selection`：复用轮次记录中的参考图与提示词快照继续生成；
+    - `confirm_before_submit`：sidecar 在「已上传+已填提示词」处暂停，继续时携带 `submit_pending=true` 只点击一次发送。
+  - 说明：豆包页面上「上传后」与「提交前」是同一时刻（上传与输入提示词后才有发送按钮），因此合并为一个确认点，避免制造虚假的第三个节点。
+  - 验证：`cargo test` 11 项通过；`node --check sidecar/src/index.js` 通过；`npm run build` 通过。**待真实浏览器复测**。
+- [x] **P0-6 多轮生图**：任务可设置轮数并按轮执行。
+  - 完成 2026-11-07：`tasks.total_rounds` 在创建任务时写入（界面「轮数」输入，1–999）；`run_rounds_loop` 逐轮执行，每轮重新抽图并重新读取 `prompt.txt`，全部轮次成功才标记 `completed`；中断后可从「两轮之间」直接继续后续轮次，不重复提取已完成的轮次。
+  - 验证：`cargo test` 11 项通过；`npm run build` 通过。**待真实浏览器复测**（设置 3 轮产生 3 个轮次与 3 个输出目录）。
+- [x] **P0-7 输出规范**：轮次目录 `yyyyMMdd_HHmmss_fff`（冲突递增后缀）、图片 `001.png`、每轮写入 `prompt.txt` / `references.json` / `task.json`。
+  - 完成 2026-11-07：`allocate_round_dir` 生成目录并处理同名冲突；目录写入数据库 `task_rounds.output_dir`；sidecar 下载文件名为 `001.png` 起步（按魔数保留真实扩展名，如 `001.jpg`）；`prompt.txt`、`references.json`（路径/SHA-256/文件夹/抽取时间）、`task.json`（任务信息/下载结果/大小/SHA-256）每轮写入。
+  - 验证：`cargo test` 含目录命名与冲突单元测试，11 项通过。**待真实运行核对文件内容**。
+
+### P1 — 功能完整性
+
+- [ ] **P1-1 项目管理补全**：导入已有项目、重命名、打开项目文件夹、创建/编辑 `prompt.txt`、参考图预览/数量/子文件夹/新增/删除/打开所在目录/详情、生成历史。
+  - 已完成 2026-11-07：导入已有项目（目录校验与去重、识别根目录 `prompt.txt`、缺失时补建 `references`/`output`、不覆盖已有文件）、重命名、打开项目文件夹、`prompt.txt` 读取与编辑保存、参考图统计（递归、按「直接包含图片的文件夹」展示数量，与 sidecar 扫描规则一致）、生成历史（最近 20 个任务、状态、轮次、成功图片数、创建/完成时间）。
+  - 新增命令：`project_import`、`project_rename`、`project_open_folder`、`project_prompt_get`、`project_prompt_set`、`project_reference_stats`、`project_task_history`。
+  - 验证：`cargo test` 13 项通过（新增参考图统计 2 项）；`npx tsc --noEmit` 通过；`npm run build` 通过。**待实机点按验证**（导入真实目录、保存提示词、打开目录）。
+  - 待完成：参考图预览、按阈值删除、单张新增、详情（尺寸/SHA-256）、打开单张图片所在目录。
+- [ ] **P1-2 账号管理补全**：拖动排序、按列表顺序轮换、单次任务指定优先账号、图片阈值编辑与判断、成功图片数/提交轮数/最近使用时间真实统计。
+- [ ] **P1-3 重试机制**：按错误类型自动重试、最大重试次数生效、下载中断续传、超过上限暂停并通知。
+- [ ] **P1-4 日志与通知**：日志按任务/账号/时间筛选、导出；软件内通知 + Windows 系统通知（当前无通知插件，开关未接线）。
+- [ ] **P1-5 国际化与设置**：全部 UI 文案走 i18n 资源（当前约 20 个词条、大量硬编码中文）；补齐全局参数、执行模式、通知开关、浏览器设置、版本号等设置项。
+- [ ] **P1-6 数据库与诊断**：数据库迁移版本机制、关键状态更新事务、Playwright Trace、失败时保存 URL/截图/脱敏日志。
+- [ ] **P1-7 测试矩阵**：补齐文件夹单元识别、随机抽取、补足、池耗尽重洗、输出命名、状态转换、参数继承、账号阈值等单元测试；增加可重复运行的集成测试与真实浏览器 E2E。
+
+## 23.3 最终验收对照
+
+| # | 验收标准 | 状态 |
+|---|---|---|
+| 1 | Windows 安装程序能正常安装和运行 | 🟡 |
+| 2 | 用户不需要自行安装 Node.js、Playwright、Chromium | ❌ |
+| 3 | 能创建和导入项目 | ✅ |
+| 4 | 能正确递归扫描参考图片 | ✅ |
+| 5 | 能按文件夹独立抽取规则选择 5 张图片 | ✅ |
+| 6 | 能保存每轮抽图记录 | ✅（`references.json` + 数据库） |
+| 7 | 能管理多个豆包账号的独立登录状态 | 🟡 |
+| 8 | 能正常操作豆包网页完成生图 | ✅（单轮实测） |
+| 9 | 能识别一轮生成的全部图片 | ✅ |
+| 10 | 能可靠保存可正常访问的原始图片资源 | ✅ |
+| 11 | 能校验下载文件完整性 | ✅ |
+| 12 | 能执行多轮任务 | 🟡（已实现，待真实浏览器复测） |
+| 13 | 能管理多个项目的任务队列 | 🟡 |
+| 14 | 能暂停、继续、取消任务 | 🟡（已实现，待真实浏览器复测） |
+| 15 | 软件关闭后能安全恢复未完成任务 | 🟡（已实现，待重启实测） |
+| 16 | 不会因为状态不明而重复提交 | 🟡（提交前检查中止标记 + 页面状态探测） |
+| 17 | 能处理登录失效、验证码和网页结构变化 | 🟡 |
+| 18 | 能保留错误截图和诊断信息 | 🟡 |
+| 19 | 能查看和导出完整执行日志 | 🟡 |
+| 20 | 支持中文和英文 | 🟡 |
+| 21 | 支持检查和安装软件更新 | 🟡 |
+| 22 | 文档齐全 | ✅ |
+
+## 23.4 备注
+
+- `docs/TECHNICAL_VALIDATION.md` 的 Phase 0 结论基于源码分析，登录后环节的实测记录见 `docs/TESTING.md`；两者应结合阅读。
+- `CHANGELOG.md` v1.0.0 中“项目导入/编辑、每轮元数据、完整国际化、暂停/继续/取消”等描述早于实现，需在对应功能真正完成后保留，否则应修正。
+- 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
+
+## 23.5 本轮变更记录
+
+### 2026-11-07（P1-1 项目管理补全，第一批）
+
+**改动文件**
+
+- `src-tauri/src/models.rs`：新增 `ReferenceFolder`、`ProjectReferenceStats`、`ProjectHistoryItem`。
+- `src-tauri/src/commands.rs`：新增项目导入/重命名/打开目录/提示词读写/参考图统计/生成历史命令；参考图统计按 sidecar 规则（递归、每个直接包含图片的文件夹为一个单元）实现，并补 2 个单元测试。
+- `src-tauri/src/main.rs`：注册 7 个新命令。
+- `src/hooks/api.ts`：新增对应类型与调用封装。
+- `src/pages/Projects.tsx`：新增「导入已有项目」、行内「历史 / 提示词 / 打开目录 / 重命名」，参考图统计可展开查看各文件夹数量，提示词弹窗读写 `prompt.txt`，历史弹窗展示最近 20 个任务。
+
+**验证命令**
+
+```powershell
+cd src-tauri; cargo test   # 13 项通过
+cd ..; npx tsc --noEmit    # 通过
+npm run build              # 通过
+```
+
+**仍需实机验证**
+
+- 导入一个已有 `prompt.txt` 与参考图的真实目录，确认去重、补建目录、提示词识别；
+- 保存提示词后确认项目根目录 `prompt.txt` 内容与后续生图读取一致；
+- 「打开目录」在 Windows 资源管理器中定位正确。
+
+### 2026-11-07（P0-2 / P0-3 / P0-5 / P0-6 / P0-7）
+
+**改动文件**
+
+- `src-tauri/src/schema.rs`：新增 `tasks.interrupted_status`、`task_rounds.output_dir`，增加 `migrate()`（`PRAGMA table_info` 增量加列，`user_version=1`）与 2 个迁移单元测试（旧库补列、重复执行幂等）。
+- `src-tauri/src/db.rs`：建表后执行迁移。
+- `src-tauri/src/models.rs`：`Task.interrupted_status`、`TaskRound.output_dir`。
+- `src-tauri/src/commands.rs`：任务查询/构造适配新列；启动重置 `current_round`；暂停/取消写入控制状态并在任务真正执行时发送 sidecar `abort`；继续执行统一走 `resume_task`；创建任务支持 `rounds`。
+- `src-tauri/src/task_scheduler.rs`：控制状态机、`wait_result` 中断检测、启动恢复 `recover_interrupted_tasks()`、`auto_run` 闸门、多轮循环 `run_rounds_loop`/`run_single_round`、人工确认节点、输出目录与元数据文件、新增 5 个单元测试。
+- `src-tauri/src/main.rs`：启动时调用恢复函数。
+- `sidecar/src/index.js`：`abort` 命令与中止标记（等待生成/上传前/提交前/下载循环检查）、`pause_before_submit`、`submit_pending`、下载文件命名改为 `001.png`。
+- `src/hooks/api.ts`：`Task.interrupted_status`、`taskCreate(..., rounds)`。
+- `src/pages/Execution.tsx`：任意执行中状态可暂停/取消；显示「上次状态/确认节点」；创建任务可填轮数；按钮阻止行点击冒泡。
+- `src/pages/Settings.tsx`：人工确认模式两个开关。
+
+**验证命令**
+
+```powershell
+cd src-tauri; cargo test          # 11 项通过
+cd sidecar; node --check src/index.js; node src/downloader.js; node src/pool.js
+cd ..; npm run build             # 通过
+```
+
+**仍需真实环境复测**
+
+- 暂停后 sidecar 不再操作页面、取消保留已下载文件；
+- 重启后不自动执行且显示原状态；
+- 设置 3 轮产生 3 个轮次目录，目录内 `prompt.txt` / `references.json` / `task.json` 内容正确；
+- 两个人工确认节点的「继续执行」流程。

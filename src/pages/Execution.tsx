@@ -57,6 +57,33 @@ const STATUS_COLORS: Record<string, string> = {
   needs_manual_intervention: '#dc2626',
 }
 
+/** 人工确认节点名称 */
+const CONFIRM_NODE_LABELS: Record<string, string> = {
+  confirm_selection: '抽图后',
+  confirm_before_submit: '提交前',
+}
+
+/** 正在执行、可被暂停/取消的状态 */
+const ACTIVE_STATUSES = [
+  'preparing',
+  'selecting_images',
+  'waiting_confirmation',
+  'uploading',
+  'submitting',
+  'generating',
+  'downloading',
+  'verifying',
+]
+
+/** 可取消的状态：执行中 + 待处理 + 已暂停 + 失败/需人工 */
+const CANCELLABLE_STATUSES = [
+  'pending',
+  'paused',
+  'failed',
+  'needs_manual_intervention',
+  ...ACTIVE_STATUSES,
+]
+
 export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: number) => void }) {
   const { t } = useI18n()
   const [tasks, setTasks] = useState<Task[]>([])
@@ -64,6 +91,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
   const [accounts, setAccounts] = useState<Account[]>([])
   const [projectId, setProjectId] = useState('')
   const [accountId, setAccountId] = useState('')
+  const [rounds, setRounds] = useState('1')
   const [logs, setLogs] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -139,9 +167,11 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
     }
     setLoading(true)
     try {
-      await taskCreate(Number(projectId), Number(accountId))
+      const r = Math.max(1, Math.min(999, Number(rounds) || 1))
+      await taskCreate(Number(projectId), Number(accountId), r)
       setProjectId('')
       setAccountId('')
+      setRounds('1')
       await loadTasks()
     } catch (err) {
       alert('创建任务失败: ' + err)
@@ -201,6 +231,17 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
             <option key={a.id} value={a.id}>账号 #{a.id} {a.name}</option>
           ))}
         </select>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#374151' }}>
+          轮数
+          <input
+            type="number"
+            min={1}
+            max={999}
+            value={rounds}
+            onChange={(e) => setRounds(e.target.value)}
+            style={{ width: '72px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+          />
+        </label>
         <button
           type="submit"
           disabled={loading}
@@ -242,6 +283,16 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
                   >
                     {STATUS_LABELS[task.status] || task.status}
                   </span>
+                  {task.status === 'needs_manual_intervention' && task.interrupted_status && (
+                    <span style={{ marginLeft: '6px', fontSize: '11px', color: '#9ca3af' }}>
+                      上次：{CONFIRM_NODE_LABELS[task.interrupted_status] || STATUS_LABELS[task.interrupted_status] || task.interrupted_status}
+                    </span>
+                  )}
+                  {task.status === 'waiting_confirmation' && task.interrupted_status && (
+                    <span style={{ marginLeft: '6px', fontSize: '11px', color: '#9ca3af' }}>
+                      节点：{CONFIRM_NODE_LABELS[task.interrupted_status] || task.interrupted_status}
+                    </span>
+                  )}
                 </td>
                 <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>{String(task.project_id ?? '-')}</td>
                 <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>{String(task.account_id ?? '-')}</td>
@@ -251,23 +302,23 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
                 <td style={{ padding: '10px' }}>
                   {task.status === 'pending' && (
                     <button
-                      onClick={() => handleStart(task.id!)}
+                      onClick={(e) => { e.stopPropagation(); handleStart(task.id!) }}
                       style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}
                     >
                       {t('btn.start')}
                     </button>
                   )}
-                  {task.status === 'preparing' && (
+                  {ACTIVE_STATUSES.includes(task.status) && task.status !== 'waiting_confirmation' && (
                     <button
-                      onClick={() => handleAction(task.id!, taskPause)}
+                      onClick={(e) => { e.stopPropagation(); handleAction(task.id!, taskPause) }}
                       style={{ background: '#ca8a04', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}
                     >
                       {t('btn.pause')}
                     </button>
                   )}
-                  {['needs_manual_intervention', 'failed'].includes(task.status) && (
+                  {['needs_manual_intervention', 'failed', 'waiting_confirmation'].includes(task.status) && (
                     <button
-                      onClick={() => handleAction(task.id!, taskContinue)}
+                      onClick={(e) => { e.stopPropagation(); handleAction(task.id!, taskContinue) }}
                       style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}
                     >
                       {t('btn.continueExecution')}
@@ -275,15 +326,15 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
                   )}
                   {task.status === 'paused' && (
                     <button
-                      onClick={() => handleAction(task.id!, taskResume)}
+                      onClick={(e) => { e.stopPropagation(); handleAction(task.id!, taskResume) }}
                       style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}
                     >
                       {t('btn.continue')}
                     </button>
                   )}
-                  {['pending', 'preparing', 'paused', 'failed', 'needs_manual_intervention'].includes(task.status) && (
+                  {CANCELLABLE_STATUSES.includes(task.status) && (
                     <button
-                      onClick={() => handleAction(task.id!, taskCancel)}
+                      onClick={(e) => { e.stopPropagation(); handleAction(task.id!, taskCancel) }}
                       style={{ background: '#dc2626', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
                     >
                       {t('btn.cancel')}

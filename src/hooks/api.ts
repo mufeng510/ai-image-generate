@@ -9,6 +9,30 @@ export interface Project {
   updated_at?: string
 }
 
+export interface ReferenceFolder {
+  relative_path: string
+  path: string
+  image_count: number
+}
+
+export interface ProjectReferenceStats {
+  references_root: string
+  total_images: number
+  folder_count: number
+  folders: ReferenceFolder[]
+}
+
+export interface ProjectHistoryItem {
+  task_id: number
+  name: string
+  status: string
+  total_rounds: number
+  current_round: number
+  success_images: number
+  created_at: string
+  completed_at?: string
+}
+
 export interface Account {
   id?: number
   name: string
@@ -27,6 +51,7 @@ export interface Task {
   project_id?: number
   account_id?: number
   status: string
+  interrupted_status?: string
   current_round?: number
   total_rounds?: number
   created_at?: string
@@ -99,6 +124,34 @@ export async function projectDelete(id: number): Promise<void> {
   return invoke('project_delete', { id })
 }
 
+export async function projectImport(name: string | null, root_path: string): Promise<Project> {
+  return invoke('project_import', { name, root_path })
+}
+
+export async function projectRename(id: number, name: string): Promise<void> {
+  return invoke('project_rename', { id, name })
+}
+
+export async function projectOpenFolder(id: number): Promise<void> {
+  return invoke('project_open_folder', { id })
+}
+
+export async function projectPromptGet(id: number): Promise<string> {
+  return invoke('project_prompt_get', { id })
+}
+
+export async function projectPromptSet(id: number, content: string): Promise<void> {
+  return invoke('project_prompt_set', { id, content })
+}
+
+export async function projectReferenceStats(id: number): Promise<ProjectReferenceStats> {
+  return invoke('project_reference_stats', { id })
+}
+
+export async function projectTaskHistory(id: number, limit = 20): Promise<ProjectHistoryItem[]> {
+  return invoke('project_task_history', { id, limit })
+}
+
 export async function accountList(): Promise<Account[]> {
   return invoke('account_list')
 }
@@ -127,8 +180,8 @@ export async function taskList(): Promise<Task[]> {
   return invoke('task_list')
 }
 
-export async function taskCreate(project_id: number, account_id: number): Promise<Task> {
-  return invoke('task_create', { project_id, account_id })
+export async function taskCreate(project_id: number, account_id: number, rounds = 1): Promise<Task> {
+  return invoke('task_create', { project_id, account_id, rounds })
 }
 
 export async function taskStart(id: number): Promise<void> {

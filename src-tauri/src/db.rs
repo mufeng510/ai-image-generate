@@ -9,6 +9,7 @@ pub fn init_db() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = app_dir.join("app.db");
     let conn = Connection::open(&db_path)?;
     crate::schema::create_tables(&conn)?;
+    crate::schema::migrate(&conn)?;
     Ok(())
 }
 

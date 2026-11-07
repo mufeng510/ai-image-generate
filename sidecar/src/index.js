@@ -44,6 +44,37 @@ const contexts = new Map(); // account_id -> { context, page, userDataDir }
 /** 当前任务抽中的参考图片（内存中保留，供后续上传使用） */
 let currentSelection = { round: null, images: [] };
 
+/**
+ * 已请求中止的任务 ID 集合。
+ * Rust 端暂停/取消时会发送 {"cmd":"abort","task_id":N}；
+ * 正在执行的长任务在检查点退出，不再操作页面（尤其是提交、下载）。
+ * 新一次执行（start_browser / resume_generate）开始时清除对应任务的中止标记。
+ */
+const abortedTasks = new Set();
+
+/** 中止异常：在长任务内部抛出，由命令分发处转换为中止结果 */
+class AbortError extends Error {
+  constructor(message) {
+    super(message || '操作已被用户中止');
+    this.name = 'AbortError';
+  }
+}
+
+/** 指定任务是否已被请求中止 */
+function isAborted(taskId) {
+  return taskId != null && abortedTasks.has(taskId);
+}
+
+/** 检查中止标记：已中止则抛出 AbortError（在关键操作前调用） */
+function throwIfAborted(taskId) {
+  if (isAborted(taskId)) throw new AbortError();
+}
+
+/** 清除任务的中止标记（新一次执行开始时调用） */
+function clearAbort(taskId) {
+  if (taskId != null) abortedTasks.delete(taskId);
+}
+
 /** 向 stdout 发送一行 JSON 事件 */
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + '\n');
@@ -465,13 +496,14 @@ async function countGeneratedImages(page) {
   return await page.locator('img[src*="tos-cn-i-a9rns2rl98"]').count().catch(() => 0);
 }
 
-/** 等待生成图片出现且数量稳定；返回最终数量（0 = 超时未出现） */
-async function waitForGeneration(page, timeoutMs) {
+/** 等待生成图片出现且数量稳定；返回最终数量（0 = 超时未出现）；任务被中止时抛出 AbortError */
+async function waitForGeneration(page, timeoutMs, taskId) {
   const deadline = Date.now() + timeoutMs;
   let lastCount = -1;
   let stablePolls = 0;
   log('info', `等待生图完成（最长 ${Math.round(timeoutMs / 1000)} 秒）…`);
   while (Date.now() < deadline) {
+    throwIfAborted(taskId);
     const count = await page.locator('img[src*="tos-cn-i-a9rns2rl98"]').count().catch(() => 0);
     if (count > 0 && count === lastCount) {
       stablePolls += 1;
@@ -502,6 +534,8 @@ function isChatDetailUrl(url) {
  */
 async function resumeGenerate(cmd) {
   const accountId = cmd.account_id;
+  // 新一次「继续执行」：清除该任务此前的中止标记
+  clearAbort(cmd.task_id);
   const ctx = contexts.get(accountId);
   if (!ctx) {
     return { ok: false, reason: 'browser_not_started', message: '浏览器未启动或页面已关闭，无法继续。请先在「账号管理」中打开登录页，或重新运行任务。' };
@@ -523,7 +557,7 @@ async function resumeGenerate(cmd) {
   if (isChatDetailUrl(url)) {
     // 已提交过：只等待生成完成，不再提交
     const timeoutMs = cmd.generation_timeout_ms || 180000;
-    const lastCount = await waitForGeneration(page, timeoutMs);
+    const lastCount = await waitForGeneration(page, timeoutMs, cmd.task_id);
     if (lastCount > 0) {
       return { ok: true, state: 'already_generated', images_found: lastCount };
     }
@@ -539,6 +573,30 @@ async function resumeGenerate(cmd) {
       return text.length > 0 ? 'filled' : 'empty';
     }).catch(() => 'missing');
     if (textboxState === 'filled') {
+      // 人工确认模式：用户已确认，替用户点击发送（仅一次）
+      if (cmd.submit_pending) {
+        const submitBtn = await findSubmitButton(page);
+        if (!submitBtn) {
+          return { ok: false, reason: 'submit_button_not_found', message: '未找到发送按钮，请手动发送后再点「继续执行」。' };
+        }
+        try {
+          await submitBtn.el.click({ timeout: 5000 });
+          log('info', `人工确认后已点击发送按钮: ${submitBtn.sel}`);
+        } catch (err) {
+          await dismissPageOverlays(page);
+          try {
+            await submitBtn.el.click({ timeout: 5000 });
+          } catch (err2) {
+            return { ok: false, reason: 'submit_click_failed', message: `点击发送按钮失败: ${err2.message}` };
+          }
+        }
+        const timeoutMs = cmd.generation_timeout_ms || 180000;
+        const lastCount = await waitForGeneration(page, timeoutMs, cmd.task_id);
+        if (lastCount > 0) {
+          return { ok: true, state: 'already_generated', images_found: lastCount };
+        }
+        return { ok: false, reason: 'generation_timeout', images_found: 0, message: '等待生图超时，页面未出现生成图片。' };
+      }
       // 不盲目点击发送：请用户确认
       return {
         ok: false,
@@ -638,6 +696,7 @@ async function generateImages(cmd) {
   }
 
   // 3. 上传参考图片（最多 5 张）
+  throwIfAborted(cmd.task_id);
   const targets = refs.slice(0, 5);
   log('info', `上传 ${targets.length} 张参考图片…`);
   try {
@@ -649,6 +708,7 @@ async function generateImages(cmd) {
   await page.waitForTimeout(4000);
 
   // 4. 输入提示词
+  throwIfAborted(cmd.task_id);
   const textboxCount = await page.locator('textarea,[contenteditable="true"]').count();
   if (textboxCount === 0) {
     await saveDiag('textbox_not_found');
@@ -665,7 +725,15 @@ async function generateImages(cmd) {
   log('info', '提示词已输入');
   await dismissPageOverlays(page); // 上传后弹窗可能再次出现
 
+  // 人工确认模式：上传完成、提示词已填，暂停等待用户确认后再提交
+  if (cmd.pause_before_submit) {
+    log('info', '人工确认模式：已上传参考图并填写提示词，等待用户确认后提交');
+    return { ok: true, state: 'awaiting_confirmation', reason: 'confirmation_required' };
+  }
+
   // 5. 提交（只提交一次；找不到按钮即停止，不盲目点击）
+  // 提交前最后检查一次中止标记：用户已暂停/取消时绝不提交
+  throwIfAborted(cmd.task_id);
   const submitBtn = await findSubmitButton(page);
   if (!submitBtn) {
     await saveDiag('submit_button_not_found');
@@ -689,7 +757,7 @@ async function generateImages(cmd) {
 
   // 6. 等待生成完成：img[src*=tos-cn-i-a9rns2rl98] 出现且数量稳定
   const genTimeoutMs = cmd.generation_timeout_ms || 180000;
-  const lastCount = await waitForGeneration(page, genTimeoutMs);
+  const lastCount = await waitForGeneration(page, genTimeoutMs, cmd.task_id);
   if (lastCount <= 0) {
     await saveDiag('generation_timeout');
     return { ok: false, reason: 'generation_timeout', images_found: 0, message: '等待生图超时，页面未出现生成图片。' };
@@ -716,9 +784,14 @@ async function downloadImages(cmd) {
   let failed = 0;
 
   for (let i = 0; i < images.length; i++) {
+    // 暂停/取消：停止继续下载；已下载完成的文件保留
+    if (isAborted(cmd.task_id)) {
+      log('warn', `收到中止请求，停止后续下载（已完成 ${results.length}/${images.length}）`);
+      break;
+    }
     const item = images[i];
     const index = (item.index != null ? item.index : i) + 1;
-    const destPath = path.join(roundDir, `image_${String(index).padStart(3, '0')}.png`);
+    const destPath = path.join(roundDir, `${String(index).padStart(3, '0')}.png`);
 
     emit({ type: 'event', event: 'download_progress', current: index, total: images.length, message: `下载中: ${path.basename(destPath)}` });
 
@@ -744,8 +817,16 @@ async function downloadImages(cmd) {
 
 /** 处理一条 stdin 命令 */
 async function handleCommand(cmd) {
+  // 暂停/取消：只设置中止标记，不打断其他命令的处理流程
+  if (cmd.cmd === 'abort') {
+    if (cmd.task_id != null) abortedTasks.add(cmd.task_id);
+    log('warn', `收到中止请求（任务 ${cmd.task_id}，原因：${cmd.reason || 'unknown'}）`);
+    return { ok: true, aborted: true };
+  }
   switch (cmd.cmd) {
     case 'start_browser':
+      // 新一次执行：清除该任务此前的中止标记
+      clearAbort(cmd.task_id);
       return await startBrowser(cmd.account_id, cmd.user_data_dir);
     case 'open_login':
       return await openLogin(cmd.account_id, cmd.user_data_dir);
@@ -783,6 +864,11 @@ function setupStdin() {
             const result = await handleCommand(cmd);
             emit({ type: 'result', cmd: cmd.cmd, ...result });
           } catch (err) {
+            if (err instanceof AbortError) {
+              log('warn', `命令 ${cmd.cmd} 已中止: ${err.message}`);
+              emit({ type: 'result', cmd: cmd.cmd, ok: false, reason: 'aborted', message: err.message });
+              return;
+            }
             log('error', `处理命令 ${cmd.cmd} 异常: ${err.message}`);
             emit({ type: 'error', cmd: cmd.cmd, message: err.message });
           }
