@@ -1317,7 +1317,14 @@ README 中说明：
 
 ### P0 — 阻断最终验收
 
-- [ ] **P0-1 内置运行时**：安装包必须自带 Node.js 与 Playwright Chromium，用户不得被要求自行安装（当前 `README.md:39`、`docs/USER_GUIDE.md:7-8` 仍要求用户安装）。
+- [x] **P0-1 内置运行时**：安装包必须自带 Node.js 与 Playwright Chromium，用户不得被要求自行安装（当前 `README.md:39`、`docs/USER_GUIDE.md:7-8` 仍要求用户安装）。
+  - 完成 2026-11-07：
+    - `scripts/fetch-runtime.ps1`：下载 Node.js v22.20.0 win-x64 portable zip 到 `runtime/node/win-x64/node.exe`（幂等，检测到则跳过；`$Force` 重下）；用 `playwright-core install chromium` 下载 Chromium + FFmpeg + Headless shell + Winldd 到 `runtime/ms-playwright/`（与 sidecar 的 playwright ^1.64.1 对齐）；`.gitignore` 排除 `runtime/`。
+    - `tauri.conf.json` `bundle.resources`：`../runtime` → `runtime/`（随安装包部署 `$installDir/runtime/node/win-x64/node.exe` 与 `$installDir/runtime/ms-playwright/`，总体 ~730MB）；`beforeBuildCommand` 自动 fetch（`npm run build && powershell -NoProfile -File scripts/fetch-runtime.ps1`，幂等）；Release workflow 在 tauri-action 前显式 fetch。
+    - Rust `which_node(app)`：NODE_EXE > 安装包内置 node > `repo/runtime/node/win-x64/node.exe` > 系统 PATH 的 `node`；Playwright 启动时若 `resource_dir` 下 ms-playwright 目录存在，注入 `PLAYWRIGHT_BROWSERS_PATH`；否则回落到系统 Playwright 缓存路径。
+    - README / USER_GUIDE / DEVELOPMENT 已同步改为「安装包内置完整运行时；源码构建需要 Node 与 Rust」。
+  - 验证：`node.exe -v` → v22.20.0；Chromium 目录总量 ~730MB；`cargo test` 33 项通过、`npx tsc --noEmit`、`npm run build`；Release 构建检查（签名 OK，release workflow 已更新；构建时间较长——`npm run tauri build` 正在跑）。
+  - 后续：`npm run tauri build` 成功后用户在干净 Windows 冒烟安装包（启动应用运行任意单轮任务，确认 sidecar 不需要 PATH 上的 Node.js）。
 - [x] **P0-2 安全暂停/取消**：暂停、取消必须真正停止正在执行的自动化；继续执行不得在状态不明时重复提交。
   - 完成 2026-11-07：`Scheduler` 增加控制状态（`Running/PauseRequested/CancelRequested`），`wait_result` 每秒检查并在中断时返回 `Interrupted`；`tasks.rs` 暂停/取消会向 sidecar 发送 `{"cmd":"abort"}`（仅当该任务正在执行时）；sidecar 在等待生成、上传前、提交前、下载循环检查中止标记，下载循环中断时保留已下载文件；继续执行统一走 `resume_task` 的页面状态探测。
   - 验证：`cargo test` 8 项通过；`node --check sidecar/src/index.js` 通过。**待真实浏览器复测**（暂停后不再提交、取消保留文件）。
@@ -1432,6 +1439,29 @@ README 中说明：
 - 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-07（P0-1 内置运行时 + 安装包自包含）
+
+**改动文件**
+
+- `scripts/fetch-runtime.ps1`（新）：Node.js v22.20.0 win-x64 zip → `runtime/node/win-x64/node.exe`；`playwright-core install chromium` → `runtime/ms-playwright/`（Chromium 156 + Headless shell + FFmpeg + Winldd）。幂等、支持 `-Force` 重下。
+- `.gitignore`：+ `runtime/`。
+- `src-tauri/tauri.conf.json`：`beforeBuildCommand` → `npm run build && powershell ... fetch-runtime.ps1`；`bundle.resources` + `../runtime` → `runtime/`。
+- `src-tauri/src/task_scheduler.rs`：`which_node(app)`——NODE_EXE > 安装包内置 node > `repo/runtime/node/win-x64/node.exe` > 系统 PATH 的 `node`；新增 `playwright_browsers_path(app)`：resource_dir 下 ms-playwright 存在时注入 `PLAYWRIGHT_BROWSERS_PATH`。
+- `.github/workflows/release.yml`：在 tauri-action 之前显式 fetch runtime（PowerShell）。
+- `README.md`、`docs/USER_GUIDE.md`、`docs/DEVELOPMENT.md`：运行时随安装包内置说明。
+
+**验证**
+
+```powershell
+pwsh -File scripts/fetch-runtime.ps1   # 幂等：0 重下
+runtime\node\win-x64\node.exe -v        # v22.20.0
+cd src-tauri; cargo test               # 33 passed
+npx tsc --noEmit                       # passed
+npm run build                          # passed
+```
+
+**后续（待 `npm run tauri build` 结果）**：安装包 release bundle 产物；干净 Windows 冒烟启动（不需要 PATH 上的 Node.js）；Release workflow 预跑 `fetch-runtime.ps1`。
 
 ### 2026-11-07（P1-7 测试矩阵，离线部分）
 

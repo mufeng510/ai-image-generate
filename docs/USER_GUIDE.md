@@ -2,10 +2,9 @@
 
 ## 使用前准备
 
-安装版应用已随附 sidecar（自动化运行时），但仍需以下环境（每台机器一次即可）：
+安装版应用为单文件安装包，**已内置 Node.js 与 Playwright Chromium（约 300–500MB）**，无需用户自行安装任何运行时。
 
-1. **Node.js >= 20**：`node` 需在 PATH 中，或设置环境变量 `NODE_EXE` 指向 node.exe 的完整路径。
-2. **Playwright Chromium 内核**：在命令行执行 `npx playwright install chromium` 下载（约 440MB）。机器上没有该内核时，启动任务会在浏览器启动阶段失败。
+（仅在源码开发/自行构建时才需要本机安装 Node.js 与 Rust。）
 
 ## 快速开始
 

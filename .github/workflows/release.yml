@@ -26,6 +26,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Fetch bundled runtime (Node.js + Chromium)
+        run: powershell -NoProfile -File scripts/fetch-runtime.ps1
+
       - name: Build and publish
         uses: tauri-apps/tauri-action@v0
         env:

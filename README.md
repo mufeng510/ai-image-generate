@@ -36,6 +36,10 @@ Free code signing provided by [SignPath.io](https://about.signpath.io), certific
 
 ### 环境要求
 
+**运行发布版安装包：无需安装 Node.js/Playwright/Chromium——运行时已随安装包分发。**
+
+仅源码开发/构建需要：
+
 - Node.js >= 20
 - Rust >= 1.70
 - Windows 10/11

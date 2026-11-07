@@ -147,18 +147,24 @@ impl Scheduler {
                 return Ok(()); // 已启动
             }
 
-            let node_exe = which_node()?;
-            let mut child = Command::new(&node_exe)
-            .arg(&index_js)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
+            let node_exe = which_node(app)?;
+            let mut cmd = Command::new(&node_exe);
+            cmd.arg(&index_js)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            // 内置 Chromium（resources/runtime/ms-playwright）存在时注入路径，
+            // 否则回落到系统 Playwright 缓存目录（%LOCALAPPDATA%\\ms-playwright）。
+            if let Some(browsers) = playwright_browsers_path(app) {
+                cmd.env("PLAYWRIGHT_BROWSERS_PATH", &browsers);
+            }
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     format!(
                         "未找到 Node.js 运行时（sidecar 需要 Node.js >= 20）。请安装 Node.js，或设置 NODE_EXE 环境变量指向 node.exe 的完整路径。（尝试启动: {}，入口: {}）",
-                        node_exe,
+                        node_exe.display(),
                         index_js.display()
                     )
                 } else {
@@ -360,11 +366,59 @@ impl Default for Scheduler {
 }
 
 /** 从哪里获取 node 可执行文件路径 */
-fn which_node() -> Result<String, String> {
+/**
+ * 解析 sidecar 使用的 Node 可执行文件路径，优先级：
+ *   1. 环境变量 NODE_EXE（显式覆盖）；
+ *   2. 打包环境：安装包内置的 runtime/node/win-x64/node.exe；
+ *   3. 开发树：仓库下的 runtime/node/win-x64/node.exe；
+ *   4. 系统 PATH 的 node。
+ */
+fn which_node(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     if let Ok(p) = std::env::var("NODE_EXE") {
-        return Ok(p);
+        let path = std::path::PathBuf::from(&p);
+        if path.exists() {
+            return Ok(path);
+        }
+        return Err(format!("NODE_EXE 指向的文件不存在: {}", p));
     }
-    Ok("node".to_string())
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let packaged = resource_dir
+            .join("runtime")
+            .join("node")
+            .join("win-x64")
+            .join("node.exe");
+        if packaged.exists() {
+            return Ok(packaged);
+        }
+    }
+    let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("runtime")
+        .join("node")
+        .join("win-x64")
+        .join("node.exe");
+    if dev_path.exists() {
+        return Ok(dev_path);
+    }
+    Ok(std::path::PathBuf::from("node"))
+}
+
+/** 打包/开发树内置 Chromium 的路径（存在时注入 PLAYWRIGHT_BROWSERS_PATH） */
+fn playwright_browsers_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let packaged = resource_dir.join("runtime").join("ms-playwright");
+        if packaged.is_dir() {
+            return Some(packaged);
+        }
+    }
+    let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("runtime")
+        .join("ms-playwright");
+    if dev_path.is_dir() {
+        return Some(dev_path);
+    }
+    None
 }
 
 /**

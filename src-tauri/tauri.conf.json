@@ -5,7 +5,7 @@
     "frontendDist": "../src-tauri/gen/dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build && powershell -NoProfile -File scripts/fetch-runtime.ps1"
   },
   "app": {
     "windows": [
@@ -32,7 +32,8 @@
     "resources": {
       "../sidecar/src": "sidecar/src",
       "../sidecar/package.json": "sidecar/package.json",
-      "../sidecar/node_modules": "sidecar/node_modules"
+      "../sidecar/node_modules": "sidecar/node_modules",
+      "../runtime": "runtime"
     },
     "icon": [
       "icons/icon.ico",

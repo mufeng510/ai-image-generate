@@ -57,7 +57,9 @@ cargo tauri build
 
 安装包输出在 `src-tauri/target/release/bundle/`（NSIS `.exe` / MSI）。
 
-安装包内置 sidecar：`src-tauri/tauri.conf.json` 的 `bundle.resources` 将 `sidecar/src`、`sidecar/package.json`、`sidecar/node_modules` 复制到安装目录的 `sidecar/` 下，Rust 端 `resolve_sidecar_index` 优先从 `resource_dir()/sidecar/src/index.js` 解析。安装版仍依赖用户机器上的 Node.js（`node` 在 PATH 或 `NODE_EXE` 环境变量）和 Playwright Chromium（`npx playwright install chromium`）。
+安装包内置 sidecar **和完整运行时**：`src-tauri/tauri.conf.json` 的 `bundle.resources` 将 `sidecar/src`、`sidecar/package.json`、`sidecar/node_modules` 复制到安装目录的 `sidecar/` 下，将 `runtime/node/win-x64/node.exe` 与 `runtime/ms-playwright/`（Node.js + Chromium）复制到安装目录的 `runtime/` 下；Rust 端 `resolve_sidecar_index` 优先从 `resource_dir()/sidecar/src/index.js` 解析入口，`which_node` 优先取 `resource_dir()/runtime/node/win-x64/node.exe`，找不到时回落到 `NODE_EXE` 环境变量或系统 PATH 的 `node`；sidecar 启动时若发现 `resource_dir()/runtime/ms-playwright/` 存在，则注入 `PLAYWRIGHT_BROWSERS_PATH`，否则回落到系统 Playwright 缓存。
+
+运行时通过 `scripts/fetch-runtime.ps1` 下载（Node.js v22.20.0 win-x64 portable zip + `playwright install chromium`）。`npm run tauri build` 的 `beforeBuildCommand` 会自动执行该脚本；CI Release workflow 也会先执行它再执行 `tauri-action`。`runtime/` 已加入 `.gitignore`，不提交。
 
 ## 发布（Release）与签名
 
