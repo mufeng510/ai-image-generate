@@ -8,8 +8,9 @@
 | 图片下载器单元测试 | 18 | 18 | 0 | ✅ |
 | Sidecar 下载器单元测试 | 9 | 9 | 0 | ✅ |
 | 随机池单元测试 | 5 | 5 | 0 | ✅ |
-| Rust 任务调度器单元测试 | 3 | 3 | 0 | ✅ |
-| **总计** | **51** | **51** | **0** | **✅ 全部通过** |
+| Sidecar 参考图扫描器单元测试 | 7 | 7 | 0 | ✅ |
+| Rust 单元测试 | 33 | 33 | 0 | ✅ |
+| **总计** | **87** | **87** | **0** | **✅ 全部通过** |
 
 ## 测试环境
 
@@ -94,13 +95,37 @@
 | ImagePool reset | ✅ |
 | ImagePool prune (删除图片) | ✅ |
 
-### task_scheduler.rs (3 Rust 测试)
+### sidecar/src/scanner.test.js (7 测试)
+
+| 测试用例 | 结果 |
+|---|---|
+| isSupportedImage：扩展名与大小写 | ✅ |
+| 递归扫描只有直接包含图片的文件夹参与 | ✅ |
+| 空目录/非图片不参与 | ✅ |
+| 文件夹少于等于 5：先逐个夹抽一张再补足 5 张 | ✅ |
+| 超过 5 个文件夹：只抽 5 个文件夹 | ✅ |
+| 图片总数不足 5 时允许重复 | ✅ |
+| 空输入返回 reason=no_folders | ✅ |
+
+### task_scheduler.rs / schema.rs / commands.rs (33 Rust 测试)
 
 | 测试用例 | 结果 |
 |---|---|
 | test_task_status_display | ✅ |
 | test_scheduler_new | ✅ |
 | test_error_class_display | ✅ |
+| 控制状态机（Running/Pause/Cancel） | ✅ |
+| auto_run 闸门 | ✅ |
+| is_current | ✅ |
+| 输出目录命名（yyyyMMdd_HHmmss_fff / _N 冲突） | ✅ |
+| schema 迁移：旧库补列 + 回填 order_index | ✅ |
+| schema 迁移：幂等 + user_version 提升至 3 | ✅ |
+| 参考图扫描统计（按文件夹直接图片数） | ✅ |
+| 路径包含校验 / destination 解析 | ✅ |
+| 账号 round-robin 轮换下标回绕 | ✅ |
+| 账号阈值判断（over_threshold） | ✅ |
+| 账号自动选择（跳过未登录/已达阈值） | ✅ |
+| 下载结果归并（absorb_download_results） | ✅ |
 
 ---
 
@@ -157,7 +182,11 @@ cd ..
 cd sidecar
 node src/downloader.js
 node src/pool.js
+node src/scanner.test.js
 cd ..
+
+# 6b. 一键运行全部离线检查（不启动应用/不触发浏览器）
+powershell -NoProfile -File scripts/run-tests.ps1
 
 # 7. 运行 Rust 单元测试
 cargo test --manifest-path src-tauri/Cargo.toml
@@ -169,6 +198,13 @@ cargo tauri dev
 cargo tauri build
 ```
 
+## 已知未覆盖项（后续）
+
+- 真实浏览器 E2E（Doubao 页面全流程）：需要真实豆包账号与用户监督，2026-11-03 曾完成单轮实测（通过）。
+- 256 张/轮的多轮真实任务：串行执行已验证 1 轮成功；多轮代码在 `run_rounds_loop` 中（第 2 轮及以后待小批复测）。
+- 参数继承（P0-4：全局默认 → 项目覆盖 → 继承）：被豆包页面参数未验证阻塞，禁止臆造参数。
+- 集成级任务状态机测试（require 真实 Doubao），当前以 `wait_result` 超时→失败路径的 `cargo test` 级别覆盖。
+
 ## 测试覆盖率统计
 
 | 模块 | 测试文件 | 测试数 | 通过率 |
@@ -177,8 +213,9 @@ cargo tauri build
 | 图片下载器 | prototype/src/validate-downloader.js | 18 | 100% |
 | Sidecar 下载器 | sidecar/src/downloader.js | 9 | 100% |
 | 持久化随机池 | sidecar/src/pool.js | 5 | 100% |
-| 任务调度器 | src-tauri/src/task_scheduler.rs | 3 | 100% |
-| **总计** | - | **51** | **100%** |
+| 参考图扫描与抽取 | sidecar/src/scanner.test.js | 7 | 100% |
+| Rust 调度/迁移/命令 | src-tauri/Cargo | 33 | 100% |
+| **总计** | - | **87** | **100%** |
 
 ## 文档完整性检查
 

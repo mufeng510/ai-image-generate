@@ -1392,7 +1392,11 @@ README 中说明：
     - **日志脱敏**：sidecar `log()` 输出前统一经 `redact()` 处理：JSON 值与 `k=v` 形式中 cookie/set-cookie/authorization/token/csrf/secret/password/api_key/session/sid/api_key/password/pwd 等字段的值都替换为 `[REDACTED]`。
   - 验证：`cargo test` 33 项通过、`npx tsc --noEmit`、`npm run build`、`node --check src/index.js`。
   - 未做：真实跑过一次开启 Trace 的生图任务（触发真实浏览器动作，需要用户许可后再验证；开启时仅影响调试，不影响正确性路径）。
-- [ ] **P1-7 测试矩阵**：补齐文件夹单元识别、随机抽取、补足、池耗尽重洗、输出命名、状态转换、参数继承、账号阈值等单元测试；增加可重复运行的集成测试与真实浏览器 E2E。
+- [x] **P1-7 测试矩阵**：补齐文件夹单元识别、随机抽取、补足、池耗尽重洗、输出命名、状态转换、参数继承、账号阈值等单元测试；增加可重复运行的集成测试与真实浏览器 E2E。
+  - 2026-11-07 完成（离线部分）：新增 `sidecar/src/scanner.test.js`（扫描器 7 项）→ sidecar/原型/ Rust 全覆盖 87 项离线断言；新增 `scripts/run-tests.ps1` 一键离线校验（不用碰真实豆包）。
+  - Rust Cargo：33 项（schema 3、commands 7、task_scheduler 23，含账号阈值/picks/absorb_download_results/control state/输出命名/round-robin 阈值）。
+  - 文档 `docs/TESTING.md` 已更新（测试数、一键脚本、未覆盖项说明：真实 Doubao 浏览器 E2E 仍待具备账号环境后的用户监督复测）。
+  - 仍待：真实浏览器 E2E 的多轮真实账号测试（需用户监督与"真实动作提交许可"）；参数继承（P0-4 阻塞）；`wait_result` 的计时路径缺少确定性测试。
 
 ## 23.3 最终验收对照
 
@@ -1428,6 +1432,25 @@ README 中说明：
 - 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-07（P1-7 测试矩阵，离线部分）
+
+**改动文件**
+
+- `sidecar/src/scanner.test.js`（新）：`isSupportedImage` 大小写/扩展名；`scanFolders` 直接包含规则 + 子文件夹独立单元 + 空目录忽略；`selectImages` ≤5 文件夹逐夾先出一张+补足5、>5 随机选 5 夹、不足 5 唯一允许重复、空输入 no_folders。
+- `scripts/run-tests.ps1`（新）：一键离线验证（不启动 app/浏览器）：prototype 提取器/下载器 + sidecar 下载器/池/扫描器，+ cargo test + tsc + npm build。
+- `docs/TESTING.md`：测试总数更新 51→87；新增扫描器章节与 Rust 33 项明细；新增一键脚本命令；明确「已知未覆盖项」（真实 Doubao 浏览器 E2E / 参数继承 P0-4 阻塞 / wait_result 计时路径）。
+- `task.md` P1-7 勾选。
+
+**验证**
+
+```powershell
+powershell -NoProfile -File scripts/run-tests.ps1   # exit 0，全部离线断言通过
+```
+
+输出：提取器 15/下载器 18/下载器 9/池 5/扫描器 7/Rust 33/tsc/build — 全部通过。
+
+**未做**：真实 Doubao 账号全链路 E2E 仍需用户监督；参数继承（P0-4 阻塞）；wait_result 慢路径缺少确定性测试。
 
 ### 2026-11-07（P1-6 数据库与诊断）
 
