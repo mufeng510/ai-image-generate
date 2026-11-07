@@ -161,14 +161,14 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
-    if (!projectId || !accountId) {
-      alert('请选择项目和账号')
+    if (!projectId) {
+      alert('请选择项目')
       return
     }
     setLoading(true)
     try {
       const r = Math.max(1, Math.min(999, Number(rounds) || 1))
-      await taskCreate(Number(projectId), Number(accountId), r)
+      await taskCreate(Number(projectId), accountId ? Number(accountId) : null, r)
       setProjectId('')
       setAccountId('')
       setRounds('1')
@@ -224,11 +224,12 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
         <select
           value={accountId}
           onChange={(e) => setAccountId(e.target.value)}
+          title="留空 = 按列表顺序自动选择（跳过未登录或已达自定义阈值的账号）"
           style={{ padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', minWidth: '180px' }}
         >
-          <option value="">选择账号…</option>
+          <option value="">自动选择账号…</option>
           {accounts.map((a) => (
-            <option key={a.id} value={a.id}>账号 #{a.id} {a.name}</option>
+            <option key={a.id} value={a.id}>账号 #{a.id} {a.name}{a.verified_images != null ? `（${a.verified_images} 张）` : ''}</option>
           ))}
         </select>
         <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#374151' }}>

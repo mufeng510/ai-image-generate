@@ -1345,7 +1345,15 @@ README 中说明：
   - 新增命令：`project_import`、`project_rename`、`project_open_folder`、`project_prompt_get`、`project_prompt_set`、`project_reference_stats`、`project_task_history`、`project_ref_list`、`project_ref_add`、`project_ref_delete`、`project_ref_create_folder`、`project_ref_detail`、`project_ref_reveal`、`project_ref_open`。
   - 安全与健壮性：所有 `references` 内文件操作统一 canonical 校验（越界返回错误）；`ensure_destination_within` 先校验最深已存在祖先再创建目录，避免 junction/symlink 逃逸；同名冲突自动重命名 `name (n).png`，不覆盖；SHA-256 使用流式计算；`reveal`/`open` 去掉 Windows `\\?\` 前缀后传给 shell；`assetProtocol` 启用且设置 CSP（`img-src` 仅允许 `self/data/blob/asset:`）。
   - 验证：`cargo test` 21 项通过；`npx tsc --noEmit` 通过；`npm run build` 通过；`assetProtocol` 需确认 scope 为 `**` 后 GUI 实测（项目页可展开参考图网格、缩略图正常渲染、预览/详情弹窗、路径筛选）。
-- [ ] **P1-2 账号管理补全**：拖动排序、按列表顺序轮换、单次任务指定优先账号、图片阈值编辑与判断、成功图片数/提交轮数/最近使用时间真实统计。
+- [x] **P1-2 账号管理补全**：拖动排序、按列表顺序轮换、单次任务指定优先账号、图片阈值编辑与判断、成功图片数/提交轮数/最近使用时间真实统计。
+  - 完成 2026-11-07：
+    - `accounts.order_index` 列 + 迁移回填（1..N 稠密化）；账号列表按 order_index 排序，拖动行首即可重排（存在完整性校验：必须包含全部账号且不存在）。
+    - 创建任务可留空账号 = 自动选择：仅 `logged_in` 且未达自定义阈值的账号按列表顺序回绕轮换（`account_rotation_cursor`，IMMEDIATE 事务内读改写）；显式指定账号则单次任务优先生效。
+    - 图片阈值（0=不限）：账号设置页可编辑；调度器每轮开始与创建任务时检查；达到阈值暂停任务并写入 `interrupted_status='account_threshold_reached'`，记录日志并广播 `account-threshold-reached` 事件；提示「不是平台额度，仅个人管理规则」。
+    - 成功图片数 = `download_status='verified'` 统计；完成轮次 = `task_rounds.status='completed'`；最近使用时间随每轮完成而更新（`accounts.last_used_at`）。
+    - 账号删除保护：存在未完成任务时拒绝删除；`load_task_context` 遇到已删除账号的空资料目录时拒绝启动自动化。
+  - 新增命令：`account_reorder`、`account_threshold_set`；`task_create` 的 `account_id` 改为可选（缺省自动轮换）。
+  - 验证：`cargo test` 28 项通过（新增自动轮换/阈值/回填/排序完整性/名称校验共 5 项）；`npx tsc --noEmit`、`npm run build` 通过；GUI 实测账号页（行首拖动手柄、统计列、阈值输入、已达阈值徽章）与任务页"自动选择账号"均正常渲染。
 - [ ] **P1-3 重试机制**：按错误类型自动重试、最大重试次数生效、下载中断续传、超过上限暂停并通知。
 - [ ] **P1-4 日志与通知**：日志按任务/账号/时间筛选、导出；软件内通知 + Windows 系统通知（当前无通知插件，开关未接线）。
 - [ ] **P1-5 国际化与设置**：全部 UI 文案走 i18n 资源（当前约 20 个词条、大量硬编码中文）；补齐全局参数、执行模式、通知开关、浏览器设置、版本号等设置项。
@@ -1386,6 +1394,34 @@ README 中说明：
 - 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-07（P1-2 账号管理补全）
+
+**改动文件**
+
+- `src-tauri/src/schema.rs`：新增 `accounts.order_index` 列 + 迁移回填（旧账号按 id 赋 1..N，ROW_NUMBER 稠密化，整体 IMMEDIATE 事务）；`task_images(download_status)` 索引；`user_version` 仅提升不回退。
+- `src-tauri/src/models.rs`：`Account` 增加 `order_index`、`verified_images`、`completed_rounds`。
+- `src-tauri/src/task_scheduler.rs`：`auto_pick_account_id`（logged_in 且未达阈值，按列表回绕轮换，IMMEDIATE 事务读写 `account_rotation_cursor`）、`pause_if_account_threshold_reached`（每轮开始检查，达阈值暂停并写 `interrupted_status='account_threshold_reached'` 并广播事件）、`over_threshold`/`pick_cursor_index` 纯函数、账号最近使用时间随轮次完成更新、`load_task_context` 拒绝空资料目录。
+- `src-tauri/src/commands.rs`：`account_list`/`account_get` 聚合统计；`account_add` 名称校验（非法 Windows 字符/保留名）、重复名称拒绝、目录按账号 id 生成、整体事务；新增 `account_reorder`（全量校验 + 单事务回填，事务函数 `apply_reorder` 可测）、`account_threshold_set`；`task_create` 的 `account_id` 改为可选（缺省自动轮换；0/负数 → 错误提示）；`account_delete` 有未完成任务时拒绝；5 个新单元测试 + 回填断言。
+- `src-tauri/src/main.rs`：注册 `account_reorder`、`account_threshold_set`。
+- `src/pages/Accounts.tsx`：拖动行首重排、阈值输入（onBlur 保存）、成功图片/完成轮次/最近使用列、已达阈值徽章。
+- `src/pages/Execution.tsx`：任务创建「自动选择账号…」缺省 + 显式指定账号；`src/hooks/api.ts`：接口与 `accountReorder`/`accountThresholdSet`。
+
+**验证**
+
+```powershell
+cd src-tauri; cargo test  # 28 passed
+cd ..; npx tsc --noEmit   # passed
+npm run build             # passed
+```
+
+**实机验证（2026-11-07 开发模式窗口）**
+
+- 账号页：doubao-main / doubao-second；拖动手柄存在；`1 张成功图片 / 1 轮完成`（doubao-main）、`0/0`（second）；阈值输入存在；最近使用 2026-11-03 13:25/13:33。
+- 任务创建：下拉默认「自动选择账号…」，tooltip 说明；显式指定仍可用。
+- 开发窗口以单独 `Stop-Process`（pid 16140）关闭。
+
+**评审**：dev-reviewer 审查（5 Major）：名称校验/目录逃逸、排序完整性、删除已绑定账号、add 并发 order_index、auto_pick 游标非事务化 → 均已修复并补测试；阈值暂停补 `interrupted_status`；account_get 同步聚合；账号迁移改为事务。
 
 ### 2026-11-07（P1-1 收尾：参考图管理器 + GUI 实测）
 

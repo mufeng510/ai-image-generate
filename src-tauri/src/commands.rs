@@ -772,6 +772,8 @@ pub async fn project_ref_open(id: i64, path: String) -> Result<(), String> {
 #[cfg(test)]
 mod project_tests {
     use super::*;
+    use crate::schema::create_tables;
+    use crate::task_scheduler::auto_pick_account_id;
 
     fn temp_project_dir(tag: &str) -> std::path::PathBuf {
         let stamp = Utc::now().timestamp_nanos_opt().unwrap_or(0);
@@ -843,6 +845,117 @@ mod project_tests {
         assert!(safe_subfolder("..").is_err());
         assert!(safe_subfolder("ok/../../evil").is_err());
         assert!(safe_subfolder("/").is_err());
+    }
+
+    fn memory_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        conn
+    }
+
+    fn seed_account(
+        conn: &rusqlite::Connection,
+        id: i64,
+        name: &str,
+        status: &str,
+        threshold: Option<i64>,
+        order_index: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO accounts (id, name, user_data_dir, status, image_threshold, success_count, submit_count, last_used_at, order_index, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, NULL, ?6, '2020-01-01T00:00:00Z')",
+            rusqlite::params![id, name, format!("dir-{}", id), status, threshold, order_index],
+        )
+        .unwrap();
+    }
+
+    fn seed_verified_images(conn: &rusqlite::Connection, account_id: i64, task_id: i64, count: i64) {
+        conn.execute(
+            "INSERT INTO tasks (id, name, project_id, account_id, status, total_rounds, created_at, updated_at) VALUES (?1, 't', NULL, ?2, 'completed', 1, '2020', '2020')",
+            rusqlite::params![task_id, account_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO task_rounds (id, task_id, round_number, status, success_count) VALUES (?1, ?2, 1, 'completed', ?3)",
+            rusqlite::params![task_id * 100, task_id, count],
+        )
+        .unwrap();
+        for image_index in 1..=count {
+            conn.execute(
+                "INSERT INTO task_images (task_round_id, image_index, download_status) VALUES (?1, ?2, 'verified')",
+                rusqlite::params![task_id * 100, image_index],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn auto_pick_skips_unlogged_and_rotates_in_order() {
+        let conn = memory_conn();
+        seed_account(&conn, 1, "a", "logged_in", None, 1);
+        seed_account(&conn, 2, "b", "unknown", None, 2);
+        seed_account(&conn, 3, "c", "logged_in", None, 3);
+
+        let first = auto_pick_account_id(&conn).unwrap();
+        let second = auto_pick_account_id(&conn).unwrap();
+        let third = auto_pick_account_id(&conn).unwrap();
+
+        assert_eq!((first, second, third), (1, 3, 1));
+        // 未被选中的账号 2 从未加入轮换，且 cursor 持久化
+        let cursor: String = conn
+            .query_row("SELECT value FROM app_settings WHERE key = 'account_rotation_cursor'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cursor, "3");
+    }
+
+    #[test]
+    fn auto_pick_errors_when_no_eligible() {
+        let conn = memory_conn();
+        seed_account(&conn, 9, "x", "unknown", None, 1);
+        let err = auto_pick_account_id(&conn).unwrap_err();
+        assert!(err.contains("没有可用账号"));
+    }
+
+    #[test]
+    fn auto_pick_skips_over_threshold_account() {
+        let conn = memory_conn();
+        seed_account(&conn, 1, "hot", "logged_in", Some(2), 1);
+        seed_verified_images(&conn, 1, 100, 2);
+        seed_account(&conn, 2, "free", "logged_in", Some(0), 2);
+
+        let pick1 = auto_pick_account_id(&conn).unwrap();
+        let pick2 = auto_pick_account_id(&conn).unwrap();
+        assert_eq!(pick1, 2);
+        assert_eq!(pick2, 2);
+    }
+
+    #[test]
+    fn reorder_requires_all_accounts() {
+        let conn = memory_conn();
+        seed_account(&conn, 1, "a", "unknown", None, 1);
+        seed_account(&conn, 2, "b", "unknown", None, 2);
+        // 只给一个 id：完整性校验失败
+        assert!(apply_reorder(&conn, &[1]).is_err());
+        // 包含全部 id：成功
+        apply_reorder(&conn, &[2, 1]).unwrap();
+        let order: Vec<i64> = {
+            let mut stmt = conn.prepare("SELECT order_index FROM accounts ORDER BY id").unwrap();
+            stmt.query_map([], |row| row.get(0)).unwrap().filter_map(|r| r.ok()).collect()
+        };
+        assert_eq!(order, vec![2, 1]);
+        // 不存在的 id 被拒绝
+        assert!(apply_reorder(&conn, &[2, 999]).is_err());
+    }
+
+    #[test]
+    fn account_name_validation_rejects_dangerous_names() {
+        assert!(validate_account_name("").is_err());
+        assert!(validate_account_name("  ").is_err());
+        assert!(validate_account_name("a/b").is_err());
+        assert!(validate_account_name("..").is_err());
+        assert!(validate_account_name("CON").is_err());
+        assert!(validate_account_name("acc-生图-01").is_ok());
+        assert_eq!(validate_account_name("  普通账号  ").unwrap(), "普通账号");
     }
 
     #[test]
@@ -925,7 +1038,18 @@ mod project_tests {
 pub async fn account_list() -> Result<Vec<Account>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, name, user_data_dir, status, image_threshold, success_count, submit_count, last_used_at, created_at FROM accounts ORDER BY created_at DESC")
+        .prepare(
+            "SELECT a.id, a.name, a.user_data_dir, a.status, a.image_threshold, a.success_count, a.submit_count, a.last_used_at, a.created_at, a.order_index,
+                    (SELECT COUNT(*) FROM task_images ti
+                       JOIN task_rounds tr ON ti.task_round_id = tr.id
+                       JOIN tasks t ON tr.task_id = t.id
+                      WHERE t.account_id = a.id AND ti.download_status = 'verified') AS verified_images,
+                    (SELECT COUNT(*) FROM task_rounds tr
+                       JOIN tasks t ON tr.task_id = t.id
+                      WHERE t.account_id = a.id AND tr.status = 'completed') AS completed_rounds
+               FROM accounts a
+              ORDER BY COALESCE(a.order_index, a.id) ASC, a.id ASC",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -939,29 +1063,129 @@ pub async fn account_list() -> Result<Vec<Account>, String> {
                 submit_count: row.get(6)?,
                 last_used_at: row.get(7)?,
                 created_at: row.get(8)?,
+                order_index: row.get(9)?,
+                verified_images: row.get(10)?,
+                completed_rounds: row.get(11)?,
             })
         })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/** 校验账号名称：非空、长度、去掉 Windows 非法字符与保留设备名 */
+fn validate_account_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("账号名称不能为空".to_string());
+    }
+    if trimmed.chars().count() > 64 {
+        return Err("账号名称过长（最多 64 个字符）".to_string());
+    }
+    for ch in trimmed.chars() {
+        match ch {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => {
+                return Err(r#"账号名称不能包含 \ / : * ? " < > |"#.to_string());
+            }
+            c if c.is_control() => return Err("账号名称不能包含控制字符".to_string()),
+            _ => {}
+        }
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err("账号名称不能为 . 或 ..".to_string());
+    }
+    // Windows 保留设备名（大小写不敏感，取第一个 '.' 前的部分）
+    let base = trimmed.split('.').next().unwrap_or("");
+    const RESERVED: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if RESERVED.iter().any(|r| base.eq_ignore_ascii_case(r)) {
+        return Err("账号名称不能使用系统保留名".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+/** 排序：输入必须包含全部账号且都存在；单事务回填 1..N */
+fn apply_reorder(conn: &rusqlite::Connection, order_ids: &[i64]) -> Result<(), String> {
+    let existing: std::collections::HashSet<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM accounts")
+            .map_err(|e| e.to_string())?;
+        let ids: Vec<i64> = stmt
+            .query_map([], |row| row.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        ids.into_iter().collect()
+    };
+    if existing.len() != order_ids.len() {
+        return Err(format!(
+            "排序列表包含 {} 个账号，但数据库中有 {} 个，请刷新后重试",
+            order_ids.len(),
+            existing.len()
+        ));
+    }
+    for id in order_ids {
+        if !existing.contains(id) {
+            return Err(format!("账号 id 不存在：{}", id));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    for id in order_ids {
+        if !seen.insert(*id) {
+            return Err(format!("账号 id 重复：{}", id));
+        }
+    }
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for (position, id) in order_ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE accounts SET order_index = ?1 WHERE id = ?2",
+            rusqlite::params![(position as i64) + 1, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn account_add(name: String) -> Result<Account, String> {
+    let name = validate_account_name(&name)?;
     let conn = get_connection().map_err(|e| e.to_string())?;
-    // 每个账号独立的用户数据目录（绝对路径，便于传给 Sidecar 启动 Chromium 持久化上下文）
+    let now = Utc::now().to_rfc3339();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+
+    let duplicate: i64 = tx
+        .query_row("SELECT COUNT(*) FROM accounts WHERE name = ?1", [&name], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if duplicate > 0 {
+        return Err(format!("账号名称已存在：{}", name));
+    }
+    let next_order: i64 = tx
+        .query_row("SELECT COALESCE(MAX(order_index), 0) + 1 FROM accounts", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    // user_data_dir 需要账号 id，先插入占位再回填，整体处于同一事务
+    tx.execute(
+        "INSERT INTO accounts (name, user_data_dir, status, success_count, submit_count, last_used_at, order_index, created_at) VALUES (?1, '', 'unknown', 0, 0, NULL, ?2, ?3)",
+        rusqlite::params![name, next_order, now],
+    )
+    .map_err(|e| e.to_string())?;
+    let last_id = tx.last_insert_rowid();
+
     let user_data_dir = crate::task_scheduler::app_data_dir()?
         .join("accounts")
-        .join(&name)
+        .join(last_id.to_string())
         .join("user-data")
         .to_string_lossy()
         .to_string();
-    let now = Utc::now().to_rfc3339();
-    conn.execute(
-        "INSERT INTO accounts (name, user_data_dir, status, success_count, submit_count, created_at) VALUES (?1, ?2, 'unknown', 0, 0, ?3)",
-        rusqlite::params![name, user_data_dir, now],
+    tx.execute(
+        "UPDATE accounts SET user_data_dir = ?1 WHERE id = ?2",
+        rusqlite::params![user_data_dir, last_id],
     )
     .map_err(|e| e.to_string())?;
-    let last_id = conn.last_insert_rowid();
+    tx.commit().map_err(|e| e.to_string())?;
+
     Ok(Account {
         id: Some(last_id),
         name,
@@ -972,12 +1196,59 @@ pub async fn account_add(name: String) -> Result<Account, String> {
         submit_count: Some(0),
         last_used_at: None,
         created_at: Some(now),
+        order_index: Some(next_order),
+        verified_images: Some(0),
+        completed_rounds: Some(0),
     })
+}
+
+/** 按列表顺序回填 order_index；前端拖动排序后调用（必须包含全部账号） */
+#[tauri::command(rename_all = "snake_case")]
+pub async fn account_reorder(order_ids: Vec<i64>) -> Result<(), String> {
+    if order_ids.is_empty() {
+        return Err("排序列表为空".to_string());
+    }
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    apply_reorder(&conn, &order_ids)
+}
+
+/** 设置账号的自定义图片阈值；0 表示不限制 */
+#[tauri::command(rename_all = "snake_case")]
+pub async fn account_threshold_set(id: i64, threshold: i64) -> Result<(), String> {
+    if threshold < 0 {
+        return Err("阈值不能为负数".to_string());
+    }
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let affected = conn
+        .execute(
+            "UPDATE accounts SET image_threshold = ?1 WHERE id = ?2",
+            rusqlite::params![threshold, id],
+        )
+        .map_err(|e| e.to_string())?;
+    if affected == 0 {
+        return Err("账号不存在".to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn account_delete(id: i64) -> Result<(), String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
+    let blocking: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks
+              WHERE account_id = ?1
+                AND status IN ('pending','preparing','selecting_images','waiting_confirmation','uploading','submitting','generating','downloading','verifying','paused','needs_manual_intervention')",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if blocking > 0 {
+        return Err(format!(
+            "该账号有 {} 个未完成任务（含需人工处理），请先取消或完成它们再删除",
+            blocking
+        ));
+    }
     conn.execute("DELETE FROM accounts WHERE id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -1041,12 +1312,26 @@ fn make_task_name(project_name: &str) -> String {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn task_create(project_id: i64, account_id: i64, rounds: Option<i64>) -> Result<Task, String> {
+pub async fn task_create(project_id: i64, account_id: Option<i64>, rounds: Option<i64>) -> Result<Task, String> {
     let total_rounds = rounds.unwrap_or(1).clamp(1, 999);
     let conn = get_connection().map_err(|e| e.to_string())?;
     let project_name: String = conn
         .query_row("SELECT name FROM projects WHERE id = ?1", [project_id], |row| row.get(0))
         .map_err(|_| "项目不存在".to_string())?;
+    // 账号：显式优先（单次任务指定优先账号）；否则按列表顺序自动轮换（跳过未登录或已达阈值的账号）
+    let account_id = match account_id {
+        Some(id) if id > 0 => {
+            let exists: i64 = conn
+                .query_row("SELECT COUNT(*) FROM accounts WHERE id = ?1", [id], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+            if exists == 0 {
+                return Err("账号不存在".to_string());
+            }
+            id
+        }
+        Some(_) => return Err("账号 id 非法，请传正整数或缺省（自动选择）".to_string()),
+        None => crate::task_scheduler::auto_pick_account_id(&conn)?,
+    };
     let name = make_task_name(&project_name);
     let now = Utc::now().to_rfc3339();
     conn.execute(
@@ -1406,7 +1691,18 @@ pub async fn task_update_round(
 #[tauri::command(rename_all = "snake_case")]
 pub async fn account_get(id: i64) -> Result<Option<Account>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, name, user_data_dir, status, image_threshold, success_count, submit_count, last_used_at, created_at FROM accounts WHERE id = ?1").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.name, a.user_data_dir, a.status, a.image_threshold, a.success_count, a.submit_count, a.last_used_at, a.created_at, a.order_index,
+                (SELECT COUNT(*) FROM task_images ti
+                   JOIN task_rounds tr ON ti.task_round_id = tr.id
+                   JOIN tasks t ON tr.task_id = t.id
+                  WHERE t.account_id = a.id AND ti.download_status = 'verified') AS verified_images,
+                (SELECT COUNT(*) FROM task_rounds tr
+                   JOIN tasks t ON tr.task_id = t.id
+                  WHERE t.account_id = a.id AND tr.status = 'completed') AS completed_rounds
+           FROM accounts a
+          WHERE a.id = ?1",
+    ).map_err(|e| e.to_string())?;
     let row = stmt.query_row([id], |row| {
         Ok(Account {
             id: row.get(0)?,
@@ -1418,6 +1714,9 @@ pub async fn account_get(id: i64) -> Result<Option<Account>, String> {
             submit_count: row.get(6)?,
             last_used_at: row.get(7)?,
             created_at: row.get(8)?,
+            order_index: row.get(9)?,
+            verified_images: row.get(10)?,
+            completed_rounds: row.get(11)?,
         })
     });
     match row {

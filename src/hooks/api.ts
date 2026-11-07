@@ -61,6 +61,11 @@ export interface Account {
   submit_count?: number
   last_used_at?: string
   created_at?: string
+  order_index?: number
+  /** 实际下载并校验通过的图片数 */
+  verified_images?: number
+  /** 成功完成的轮次数 */
+  completed_rounds?: number
 }
 
 export interface Task {
@@ -210,6 +215,14 @@ export async function accountOpenLogin(id: number): Promise<void> {
   return invoke('account_open_login', { id })
 }
 
+export async function accountReorder(order_ids: number[]): Promise<void> {
+  return invoke('account_reorder', { order_ids })
+}
+
+export async function accountThresholdSet(id: number, threshold: number): Promise<void> {
+  return invoke('account_threshold_set', { id, threshold })
+}
+
 export async function accountDelete(id: number): Promise<void> {
   return invoke('account_delete', { id })
 }
@@ -226,7 +239,7 @@ export async function taskList(): Promise<Task[]> {
   return invoke('task_list')
 }
 
-export async function taskCreate(project_id: number, account_id: number, rounds = 1): Promise<Task> {
+export async function taskCreate(project_id: number, account_id: number | null, rounds = 1): Promise<Task> {
   return invoke('task_create', { project_id, account_id, rounds })
 }
 

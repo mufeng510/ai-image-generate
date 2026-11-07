@@ -39,6 +39,8 @@ fn main() {
             commands::account_list,
             commands::account_add,
             commands::account_delete,
+            commands::account_reorder,
+            commands::account_threshold_set,
             commands::account_get,
             commands::account_open_login,
             commands::settings_get,

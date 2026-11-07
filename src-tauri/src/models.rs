@@ -21,6 +21,12 @@ pub struct Account {
     pub submit_count: Option<i64>,
     pub last_used_at: Option<String>,
     pub created_at: Option<String>,
+    /// 用户自定义顺序（越小越靠前）
+    pub order_index: Option<i64>,
+    /// 实际成功下载并校验的图片数（按 task_images.download_status='verified' 统计）
+    pub verified_images: Option<i64>,
+    /// 成功完成的轮次数（task_rounds.status='completed'）
+    pub completed_rounds: Option<i64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

@@ -23,6 +23,7 @@ pub fn create_tables(conn: &Connection) -> Result<(), Box<dyn std::error::Error>
             success_count INTEGER DEFAULT 0,
             submit_count INTEGER DEFAULT 0,
             last_used_at TEXT,
+            order_index INTEGER,
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_accounts_name ON accounts(name);
@@ -104,6 +105,7 @@ pub fn create_tables(conn: &Connection) -> Result<(), Box<dyn std::error::Error>
         CREATE INDEX IF NOT EXISTS idx_execution_logs_task_id ON execution_logs(task_id);
         CREATE INDEX IF NOT EXISTS idx_execution_logs_created_at ON execution_logs(created_at);
         CREATE INDEX IF NOT EXISTS idx_execution_logs_level ON execution_logs(level);
+        CREATE INDEX IF NOT EXISTS idx_task_images_status ON task_images(download_status);
 
         CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT PRIMARY KEY,
@@ -116,10 +118,48 @@ pub fn create_tables(conn: &Connection) -> Result<(), Box<dyn std::error::Error>
 
 /// 增量迁移：仅添加缺失列，不删除、不覆盖用户数据。
 /// 使用 PRAGMA table_info 判断列是否存在，兼容已经安装过的旧数据库。
+/// 整体在 IMMEDIATE 事务内执行；只在当前版本低于目标版本时提升 user_version。
 pub fn migrate(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = migrate_inner(conn);
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+fn migrate_inner(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     ensure_column(conn, "tasks", "interrupted_status", "TEXT")?;
     ensure_column(conn, "task_rounds", "output_dir", "TEXT")?;
-    conn.pragma_update(None, "user_version", 1)?;
+    ensure_column(conn, "accounts", "order_index", "INTEGER")?;
+    // 旧账号按 id（插入顺序）回填 order_index
+    conn.execute(
+        "UPDATE accounts SET order_index = id WHERE order_index IS NULL",
+        [],
+    )?;
+    // 统一为 1..N，避免历史数据出现空位导致排序不稳定
+    conn.execute_batch(
+        "
+        CREATE TEMP VIEW IF NOT EXISTS accounts_ranked AS
+            SELECT id, ROW_NUMBER() OVER (ORDER BY order_index, id) AS rn FROM accounts;
+        UPDATE accounts SET order_index = (SELECT rn FROM accounts_ranked WHERE accounts_ranked.id = accounts.id);
+        DROP VIEW accounts_ranked;
+        ",
+    )?;
+    let current: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap_or(0);
+    // 只提升，不回退：避免覆盖未来更高的版本号
+    let target: i64 = 2;
+    if current < target {
+        conn.pragma_update(None, "user_version", target)?;
+    }
     Ok(())
 }
 
@@ -167,15 +207,32 @@ mod tests {
             r#"
             CREATE TABLE tasks (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
             CREATE TABLE task_rounds (id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL);
+            CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
             "#,
         )
         .unwrap();
+        conn.execute("INSERT INTO accounts (id, name) VALUES (5, '旧账号')", [])
+            .unwrap();
+        conn.execute("INSERT INTO accounts (id, name) VALUES (9, '旧账号2')", [])
+            .unwrap();
 
         migrate(&conn).unwrap();
 
         assert!(columns(&conn, "tasks").contains(&"interrupted_status".to_string()));
         assert!(columns(&conn, "task_rounds").contains(&"output_dir".to_string()));
-        assert_eq!(user_version(&conn), 1);
+        assert!(columns(&conn, "accounts").contains(&"order_index".to_string()));
+        // 回填：旧账号 order_index 应按 id 升序为 1..N
+        let order: Vec<i64> = {
+            let mut stmt = conn
+                .prepare("SELECT order_index FROM accounts ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, i64>(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        assert_eq!(order, vec![1, 2]);
+        assert_eq!(user_version(&conn), 2);
     }
 
     #[test]
@@ -190,6 +247,7 @@ mod tests {
         assert_eq!(before, columns(&conn, "tasks"));
         assert!(columns(&conn, "tasks").contains(&"interrupted_status".to_string()));
         assert!(columns(&conn, "task_rounds").contains(&"output_dir".to_string()));
-        assert_eq!(user_version(&conn), 1);
+        assert!(columns(&conn, "accounts").contains(&"order_index".to_string()));
+        assert_eq!(user_version(&conn), 2);
     }
 }

@@ -784,6 +784,10 @@ fn load_task_context(tid: i64) -> Result<TaskContext, String> {
     );
     let (project_root, account_id, user_data_dir, prompt_path) = ctx.map_err(|e| e.to_string())?;
     let account_id = account_id.ok_or("任务未绑定账号")?;
+    if user_data_dir.trim().is_empty() {
+        // 账号已被删除或浏览器资料目录遗失：拒绝在空资料目录启动自动化
+        return Err("任务绑定的账号不存在或已被删除，请绑定其他账号后创建任务".to_string());
+    }
     Ok(TaskContext {
         project_root: std::path::PathBuf::from(&project_root),
         account_id,
@@ -958,6 +962,149 @@ fn allocate_round_dir(output_root: &std::path::Path) -> std::path::PathBuf {
 
 /** 多轮循环：逐轮执行，全部成功后才标记任务完成 */
 #[allow(clippy::too_many_arguments)]
+/** 账号阈值的纯函数形式，便于单元测试 */
+fn over_threshold(verified_images: i64, threshold: &Option<i64>) -> bool {
+    match threshold {
+        Some(t) => *t > 0 && verified_images >= *t,
+        None => false,
+    }
+}
+
+/** 轮换选择器：按顺序取 `cursor` 个位置，回绕 */
+fn pick_cursor_index(eligible_len: usize, cursor: i64) -> usize {
+    if eligible_len == 0 {
+        return 0;
+    }
+    cursor.rem_euclid(eligible_len as i64) as usize
+}
+
+fn account_verified_images(conn: &rusqlite::Connection, account_id: i64) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*)
+           FROM task_images ti
+           JOIN task_rounds tr ON ti.task_round_id = tr.id
+           JOIN tasks t ON tr.task_id = t.id
+          WHERE t.account_id = ?1 AND ti.download_status = 'verified'",
+        [account_id],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
+}
+
+fn account_image_threshold(conn: &rusqlite::Connection, account_id: i64) -> Result<Option<i64>, String> {
+    conn.query_row(
+        "SELECT image_threshold FROM accounts WHERE id = ?1",
+        [account_id],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/** 账号存在且已达到用户自定义阈值 */
+fn account_over_threshold(conn: &rusqlite::Connection, account_id: i64) -> bool {
+    match account_image_threshold(conn, account_id) {
+        Ok(threshold) => over_threshold(account_verified_images(conn, account_id), &threshold),
+        Err(_) => false,
+    }
+}
+
+/** 自动选择：排除未登录与已达自定义阈值的账号，按列表顺序回绕轮换（整个选择在一个 IMMEDIATE 事务内完成） */
+pub(crate) fn auto_pick_account_id(conn: &rusqlite::Connection) -> Result<i64, String> {
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| format!("开始轮换事务失败：{}", e))?;
+    let result = auto_pick_account_id_tx(conn);
+    match result {
+        Ok(id) => {
+            conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+            Ok(id)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+fn auto_pick_account_id_tx(conn: &rusqlite::Connection) -> Result<i64, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT a.id, a.image_threshold,
+                    (SELECT COUNT(*) FROM task_images ti
+                       JOIN task_rounds tr ON ti.task_round_id = tr.id
+                       JOIN tasks t ON tr.task_id = t.id
+                      WHERE t.account_id = a.id AND ti.download_status = 'verified')
+               FROM accounts a
+              WHERE a.status = 'logged_in'
+              ORDER BY a.order_index ASC, a.id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let eligible: Vec<i64> = stmt
+        .query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let threshold: Option<i64> = row.get(1)?;
+            let verified: i64 = row.get(2)?;
+            Ok((id, threshold, verified))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .filter(|(_, threshold, verified)| !over_threshold(*verified, threshold))
+        .map(|(id, _, _)| id)
+        .collect();
+
+    if eligible.is_empty() {
+        return Err("没有可用账号：全部未登录或已达用户自定义阈值，请调整阈值或登录账号".to_string());
+    }
+
+    let cursor: i64 = conn
+        .query_row("SELECT value FROM app_settings WHERE key = 'account_rotation_cursor'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .unwrap_or(0);
+
+    let index = pick_cursor_index(eligible.len(), cursor);
+    let chosen = eligible[index];
+    let next = cursor.wrapping_add(1);
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES ('account_rotation_cursor', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [next.to_string()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(chosen)
+}
+
+/** 账号已达用户自定义阈值时暂停当前任务，返回 true 表示已暂停 */
+fn pause_if_account_threshold_reached(app: &AppHandle, tid: i64, account_id: i64) -> bool {
+    if let Ok(conn) = get_connection() {
+        if account_over_threshold(&conn, account_id) {
+            set_task_status(
+                app,
+                tid,
+                "needs_manual_intervention",
+                &format!("账号 {} 已达到用户自定义图片阈值，已暂停。可调整阈值后点「继续执行」", account_id),
+            );
+            let _ = conn.execute(
+                "UPDATE tasks SET interrupted_status = 'account_threshold_reached' WHERE id = ?1",
+                [tid],
+            );
+            let _ = db_write_log(
+                &conn,
+                Some(tid),
+                "warn",
+                "账号已达到用户自定义图片阈值，任务已暂停（不是平台额度，仅用户个人管理规则）",
+            );
+            let _ = app.emit(
+                "account-threshold-reached",
+                serde_json::json!({ "task_id": tid, "account_id": account_id }),
+            );
+            return true;
+        }
+    }
+    false
+}
+
 async fn run_rounds_loop(
     app: &AppHandle,
     scheduler: &Scheduler,
@@ -972,6 +1119,10 @@ async fn run_rounds_loop(
 ) -> bool {
     let mut round_number = first_round;
     while round_number <= total_rounds {
+        // 账号阈值检查：达到用户自定义阈值时暂停当前任务（不是平台额度限制）
+        if pause_if_account_threshold_reached(app, tid, account_id) {
+            return false;
+        }
         match run_single_round(
             app,
             scheduler,
@@ -1442,9 +1593,15 @@ async fn finish_after_generation(
 
         let total = download_results.len() as i64;
         let round_status = if success_count > 0 { "completed" } else { "failed" };
+        let now_round = Utc::now().to_rfc3339();
         let _ = conn.execute(
             "UPDATE task_rounds SET status = ?1, success_count = ?2, completed_at = ?3 WHERE id = ?4",
-            rusqlite::params![round_status, success_count, Utc::now().to_rfc3339(), round_id],
+            rusqlite::params![round_status, success_count, now_round, round_id],
+        );
+        // 记录账号最近使用时间（用于按列表轮换参考）
+        let _ = conn.execute(
+            "UPDATE accounts SET last_used_at = ?1 WHERE id = ?2",
+            rusqlite::params![now_round, account_id],
         );
         let _ = db_write_log(&conn, Some(tid), "info",
             &format!("本轮下载完成：成功 {}/{} 张", success_count, total));
@@ -1925,6 +2082,24 @@ mod tests {
         // 控制状态按任务隔离
         scheduler.request_pause(7);
         assert_eq!(scheduler.control_state(8), ControlState::Running);
+    }
+
+    #[test]
+    fn test_over_threshold_rules() {
+        assert!(!over_threshold(0, &None));
+        assert!(!over_threshold(100, &Some(0))); // 0 表示不限制
+        assert!(!over_threshold(4, &Some(5)));
+        assert!(over_threshold(5, &Some(5)));
+        assert!(over_threshold(6, &Some(5)));
+        assert!(!over_threshold(4, &Some(-1))); // 非法负数视为不限制
+    }
+
+    #[test]
+    fn test_pick_cursor_index_wraps() {
+        assert_eq!(pick_cursor_index(3, 0), 0);
+        assert_eq!(pick_cursor_index(3, 5), 2);
+        assert_eq!(pick_cursor_index(3, -1), 2);
+        assert_eq!(pick_cursor_index(0, 7), 0);
     }
 
     #[test]
