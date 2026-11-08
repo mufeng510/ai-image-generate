@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v1.1.0] - 2026-11-08
+
 ### 新增
 
 - 设置页新增「自动拣取队列中的待执行任务」开关（`scheduler_auto_run_get` / `scheduler_auto_run_set`）：关闭后调度主循环停止自动拣取 pending 任务，新任务需手动点「开始」；不影响正在执行和已排队的任务；应用重启后默认关闭
@@ -26,7 +28,8 @@
 - 2026-11-08 真实账号单轮全链路实测通过（任务 #9）：创建 → 扫描 references/ → 上传 → 提示词 → 提交前确认暂停 →「继续执行」→ 发送 → 生图 → 提取 → 下载 → 校验，产物 `001.png`/`002.png` 均 `download_status='verified'`。
 - 2026-11-08 真实账号 3 轮多轮 E2E + 暂停/继续（任务 #10，HEAD 0e281f4）：创建 3 轮 → 生成等待中点击暂停（任务/轮次正确落 `paused`）→「继续」经页面状态探测识别已生成 2 张图并提取下载、**无重复提交** → 第 2/3 轮按 `run_rounds_loop` 自动完成 → 6/6 张 `verified`，本地重算 SHA-256 全部一致；输出目录命名规范、`task_rounds` 3/3 `completed`。
 - 2026-11-08 账号自定义阈值暂停实测（任务 #11，threshold=1，账号 #1 已有 9 张 verified 图）：任务在第 1 轮开始前即暂停（`needs_manual_intervention`，`interrupted_status='account_threshold_reached'`），通知中心与执行日志均有记录，全程未消耗生图额度；测后阈值恢复为 0、任务已取消。
-- 2026-11-08 修复复验（任务 #12，1 轮）：修复后构建完成一轮真实生图（2/2 `verified`，SHA-256 一致）；`accounts` 计数实测回写——doubao-main `submit_count` 0→1、`success_count` 5→6、`status='logged_in'`。注意：任务创建后无需点「开始」即开始执行——本实例中「开始」启用的 auto_run 闸门在任务 #11 时已打开且不会关闭，新建的 pending 任务被主循环自动拣取。
+- 2026-11-08 修复复验（任务 #12，1 轮）：修复后构建完成一轮真实生图（2/2 `verified`，SHA-256 一致）；`accounts` 计数实测回写——doubao-main `submit_count` 0→1、`success_count` 5→6、`status='logged_in'`。注意：任务创建后无需点「开始」即开始执行——本实例中「开始」启用的 auto_run 闸门在任务 #11 时已打开（v1.1.0 起可在设置页关闭，重启后默认关闭）。
+- 2026-11-08 1.0.0 安装包装机冒烟（本机 Win10 IoT LTSC）：MSI 安装 1.0.0 → 安装目录内置 runtime 独立可运行（node v22.20.0、ms-playwright 718MB）→ 净化 PATH 启动 UI 正常、版本显示 1.0.0 ✓。
 - 历史数据回填（随上述修复）：doubao-main 置为 `logged_in`、`success_count=5`（按 verified 轮次重算）；`task_rounds` 中已完成轮次的陈旧 `failure_reason` 已清空（任务 #10 round 1）。
 
 ## [v1.0.0] - 2026-11-07

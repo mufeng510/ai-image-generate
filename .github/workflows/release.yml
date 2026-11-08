@@ -40,7 +40,12 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
-          releaseBody: 'See changelog.'
+          releaseBody: |-
+            v1.1.0（2026-11-08）——见 CHANGELOG.md 的 [v1.1.0] 段。
+
+            主要内容：修复「继续执行」误判参考图为已生成图片、参考图扫描越权、sidecar 无法启动三个 E2E 发现的问题；账号状态与计数回写；轮次恢复后清空失败原因；移除死代码（0 warning）；设置页新增「自动拣取队列中的待执行任务」开关；安装包内置完整运行时（Node.js v22.20.0 + Chromium），用户无需自行安装。
+
+            安装包自带内置运行时，安装后即可使用。
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
