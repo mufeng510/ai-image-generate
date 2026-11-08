@@ -208,6 +208,14 @@
 
 **B2 元数据抽查（只读）**：全部 5 个已完成轮次目录（task #9/#10×3/#12）含 `prompt.txt` / `references.json` / `task.json`；`references.json` 与 DB `task_rounds.references_json` 逐字段一致；6/6 已下载图 `download_status='verified'` 且本地重算 SHA-256 与 `task_images.sha256` 一致。
 
+### 2026-11-08 B3/B4：多账号轮换（部分）+ 真实生图中取消（task #13/#14）
+
+**B3 轮换**：#13（项目 #1，自动选择账号）→ 任务自动选 doubao-main（列表顺序第一个），2 张图完成、doubao-main 回写 `submit_count` 1→2、`last_used_at` 更新；游标推进到 1；#14（下一个 auto 任务）自动落到 **doubao-second**，证明列表顺序轮换生效。doubao-second 完成一次真实提交链路（见 B4）。剩余：B5 连续两个任务观察 second 直接使用情况并闭合验收 #7。
+
+**B4 真实生图中取消（task #14，doubao-second）**：创建→自动选 doubao-second→提交生图→生成等待中点「取消」→20s 内干净中止（abort 生效，未下载文件产生）→任务落 `cancelled`、日志「任务已取消（已保留已下载图片）」、**不重复提交**；doubao-second `submit_count` 保持 0（提交未获确认，不计提交——符合「不确定不计入」原则）。注意：豆包页面上这次生图可能已被提交并在服务端执行完（客户端不重发、不下载），属取消语义。
+
+附带观察：本实例中「开始」启用 auto_run 闸门后，新建的 pending 任务（#14）无需再点「开始」即被主循环自动捡取执行（v1.1.0 起设置页可关闭该闸门）。
+
 ### 2026-11-08 账号自定义阈值暂停实测（task #11）
 
 环境：账号 #1 已有 9 张 verified 图；将其 `image_threshold` 临时设为 1 → 创建 1 轮任务并开始（显式选择账号 #1）→ 任务在第 1 轮开始前即暂停：
