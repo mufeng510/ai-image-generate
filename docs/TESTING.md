@@ -200,7 +200,7 @@
 1. 轮次失败原因残留：round 1 `failure_reason='生成等待阶段被中断'` 在恢复完成后未清空 → 修复：`finish_after_generation` 成功分支写入 `failure_reason = NULL`；并回填清空已完成轮次中的陈旧值（task_rounds 1 行）。
 2. 账号状态未回写：doubao-main 三轮成功后 `accounts.status` 仍为 `login_pending` → 修复：生成/提取成功（进入校验事务）即置 `logged_in` 并累计 `success_count`；`submit_count` 于成功提交点（含人工确认节点「继续执行」代点发送）累加；`resume` 页面探测路径不重复计数。历史数据回填：doubao-main → `logged_in`、`success_count=5`（按 verified 轮次重算；`submit_count` 无法可靠回溯，从修复后开始累计）。
 3. 账号阈值暂停路径已实测通过（任务 #11，见下节）。
-4. 复验（任务 #12，1 轮真实生图）：任务完成、2/2 `verified`、SHA-256 一致；`accounts` 实测回写——doubao-main `submit_count` 0→1、`success_count` 5→6、`status='logged_in'`。另观察到：本实例中「开始」打开的 auto_run 闸门（`Scheduler::auto_run`，进程级，一旦启用不再关闭）导致后续新建的 pending 任务无需再点「开始」即被主循环自动拣取执行——属有设计意味的行为（「开始」=为本实例启用自动执行），建议产品确认是否需要关闭闸门的入口或按任务粒度控制。
+4. 复验（任务 #12，1 轮真实生图）：任务完成、2/2 `verified`、SHA-256 一致；`accounts` 实测回写——doubao-main `submit_count` 0→1、`success_count` 5→6、`status='logged_in'`。另观察到：本实例中「开始」打开的 auto_run 闸门（`Scheduler::auto_run`，进程级，一旦启用不再关闭）导致后续新建的 pending 任务无需再点「开始」即被主循环自动拣取执行——属有设计意味的行为（「开始」=为本实例启用自动执行）。**跟进（同日确认）**：已新增设置页「自动拣取队列中的待执行任务」开关（`scheduler_auto_run_get` / `scheduler_auto_run_set`），关闭后停止自动拣取 pending 任务（已在执行的任务不受影响），应用重启后默认关闭。
 
 ### 2026-11-08 账号自定义阈值暂停实测（task #11）
 
@@ -260,8 +260,8 @@ cargo tauri build
 - 真实浏览器 E2E（Doubao 页面全流程）：2026-11-03 单轮通过；2026-11-08 3 轮多轮（task #10）+ 生成等待中暂停/继续 全部通过（详见上节）。
 - 取消任务 / 软件关闭恢复：仍未在真实账号复测（取消 2026-11-03 曾出现但未系统验证；2026-11-08 task #11 取消仅覆盖阈值暂停后的取消）。
 - 账号阈值暂停（image_threshold）：已测（task #11）；auto 选号跳过 login_pending 的行为未在真实环境复测（账号现已回写 logged_in）。
-- 参数继承（P0-4：全局默认 → 项目覆盖 → 继承）：被豆包页面参数未验证阻塞，禁止臆造参数。
-- 集成级任务状态机测试（require 真实 Doubao），当前以 `wait_result` 超时→失败路径的 `cargo test` 级别覆盖。
+- 参数继承（P0-4：全局默认 → 项目覆盖 → 继承）：已完成真实页面参数验证与单元测试覆盖（`merge_gen_params`），「全局 → 项目 → 继承」解析链离线已测；「apply 写入豆包页面」的真实 E2E 未单独验证（gen_params 默认仅记录不下发）。
+- 集成级任务状态机测试（require 真实 Doubao），当前以 `wait_result` 超时→失败路径的 `cargo test` 级别覆盖，计时路径缺少确定性测试。
 
 ## 测试覆盖率统计
 

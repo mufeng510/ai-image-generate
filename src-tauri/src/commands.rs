@@ -1385,6 +1385,23 @@ pub async fn settings_set(key: String, value: String) -> Result<(), String> {
     Ok(())
 }
 
+/** 查询 auto_run 闸门状态（进程级，启动后默认 false；用户点击「开始」后启用） */
+#[tauri::command(rename_all = "snake_case")]
+pub async fn scheduler_auto_run_get(scheduler: State<'_, Arc<Scheduler>>) -> Result<bool, String> {
+    Ok(scheduler.is_auto_run())
+}
+
+/** 设置 auto_run 闸门：关闭后主循环不再自动拣取 pending 任务；已排队任务需手动点「开始」 */
+#[tauri::command(rename_all = "snake_case")]
+pub async fn scheduler_auto_run_set(scheduler: State<'_, Arc<Scheduler>>, open: bool) -> Result<(), String> {
+    if open {
+        scheduler.enable_auto_run();
+    } else {
+        scheduler.disable_auto_run();
+    }
+    Ok(())
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn task_list() -> Result<Vec<Task>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 设置页新增「自动拣取队列中的待执行任务」开关（`scheduler_auto_run_get` / `scheduler_auto_run_set`）：关闭后调度主循环停止自动拣取 pending 任务，新任务需手动点「开始」；不影响正在执行和已排队的任务；应用重启后默认关闭
+
 ### 清理
 
 - 移除死代码与未使用项（构建现 0 warning）：`TaskStatus` / `ErrorClass` 枚举（仅被测试使用，实际状态机用字符串）及其 Display 测试、`Scheduler::stop_sidecar`、`sha256_hex`（仅测试用，标记 `#[cfg(test)]`）、前端从未调用的原型 IPC 命令 `task_create_round` / `task_add_image` / `task_update_round` 及其注册与 payload 结构

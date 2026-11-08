@@ -292,6 +292,14 @@ export async function settingsSet(key: string, value: string): Promise<void> {
   return invoke('settings_set', { key, value })
 }
 
+export async function schedulerAutoRunGet(): Promise<boolean> {
+  return invoke('scheduler_auto_run_get')
+}
+
+export async function schedulerAutoRunSet(open: boolean): Promise<void> {
+  return invoke('scheduler_auto_run_set', { open })
+}
+
 export async function taskList(): Promise<Task[]> {
   return invoke('task_list')
 }

@@ -48,6 +48,8 @@ fn main() {
             commands::account_open_login,
             commands::settings_get,
             commands::settings_set,
+            commands::scheduler_auto_run_get,
+            commands::scheduler_auto_run_set,
             commands::task_list,
             commands::task_create,
             commands::task_start,

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { settingsGet, settingsSet, GEN_MODEL_OPTIONS, GEN_RATIO_OPTIONS, GEN_STYLE_OPTIONS } from '@/hooks/api'
+import { settingsGet, settingsSet, schedulerAutoRunGet, schedulerAutoRunSet, GEN_MODEL_OPTIONS, GEN_RATIO_OPTIONS, GEN_STYLE_OPTIONS } from '@/hooks/api'
 import { useI18n } from '@/i18n'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification'
@@ -22,6 +22,7 @@ export default function SettingsPage() {
   const [genStyle, setGenStyle] = useState('')
   const [genApply, setGenApply] = useState(false)
   const [playwrightTrace, setPlaywrightTrace] = useState(false)
+  const [autoRunGate, setAutoRunGate] = useState(false)
 
   async function load() {
     const v = await settingsGet('project_root')
@@ -42,6 +43,7 @@ export default function SettingsPage() {
     const gr = await settingsGet('gen_ratio'); if (gr != null) setGenRatio(gr)
     const gs = await settingsGet('gen_style'); if (gs != null) setGenStyle(gs)
     const ga = await settingsGet('gen_params_apply'); setGenApply(ga === 'true')
+    schedulerAutoRunGet().then(setAutoRunGate).catch(() => setAutoRunGate(false))
     getVersion().then(setVersion).catch(() => setVersion('unknown'))
   }
 
@@ -272,6 +274,28 @@ export default function SettingsPage() {
             <option value="auto">{t('settings.executionAuto')}</option>
             <option value="step">{t('settings.executionStep')}</option>
           </select>
+        </div>
+        <div style={{ marginBottom: '16px' }}>
+          <p style={{ fontSize: '12px', color: '#9ca3af', margin: '0 0 6px' }}>
+            {t('settings.autoRunNote')}
+          </p>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+            <input
+              type='checkbox'
+              checked={autoRunGate}
+              onChange={async (e) => {
+                const next = e.target.checked
+                try {
+                  await schedulerAutoRunSet(next)
+                  setAutoRunGate(next)
+                } catch (err) {
+                  alert(t('settings.saveFailed') + String(err))
+                }
+              }}
+              style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+            />
+            {t('settings.autoRun')}
+          </label>
         </div>
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.roundCountNote')}</label>

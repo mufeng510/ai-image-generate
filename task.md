@@ -1446,10 +1446,20 @@ README 中说明：
 ## 23.4 备注
 
 - `docs/TECHNICAL_VALIDATION.md` 的 Phase 0 结论基于源码分析，登录后环节的实测记录见 `docs/TESTING.md`；两者应结合阅读。
-- `CHANGELOG.md` v1.0.0 中“项目导入/编辑、每轮元数据、完整国际化、暂停/继续/取消”等描述早于实现，需在对应功能真正完成后保留，否则应修正。
-- 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-08（auto_run 闸门设置入口 + 文档一致性修正）
+
+**背景**：2026-11-08 多轮 E2E 暴露「开始」启用的 `auto_run` 闸门为进程级且无法关闭（后续 pending 任务会被自动拣取），产品确认需要关闭入口；同时修正文档中已过期的备注与未覆盖项说明。
+
+**改动**：
+- Rust（`task_scheduler.rs`）：新增 `Scheduler::disable_auto_run()`（`enable_auto_run` 对称）。
+- 命令（`commands.rs`）：新增 `scheduler_auto_run_get()` / `scheduler_auto_run_set(open)`；`main.rs` 注册。
+- 前端（`Settings.tsx` / `api.ts` / `i18n/index.tsx`）：设置页新增「自动拣取队列中的待执行任务」开关（zh/en），加载/切换走新命令；文案注明「关闭后新任务需手动点开始、不影响执行中任务、重启后默认关闭」。
+- 文档：`docs/TESTING.md` 更新 auto_run 观察项（注明跟进方案）、修正「参数继承被 P0-4 阻塞」过期说法（已完成真实页面验证与 `merge_gen_params` 单元测试）、集成测试说明补 `wait_result` 计时路径缺确定性测试；`task.md` 23.4 移除已失效的 CHANGELOG/P0-4 备注。
+
+**验证**：`cargo build --offline` 0 warning；`cargo test` 40 项通过；`npx tsc --noEmit` 通过；`npm run build` 通过；`scripts/run-tests.ps1` 全绿；dev 窗口 GUI 实测：设置页「自动拣取队列中的待执行任务」开关可见，点选后复选框往返切换正常（开→关，往返两次），note 文案完整显示。
 
 ### 2026-11-08（死代码/未使用变量清理）
 

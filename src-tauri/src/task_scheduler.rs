@@ -301,6 +301,11 @@ impl Scheduler {
         *self.auto_run.lock().unwrap() = true;
     }
 
+    /** 关闭闸门：停止自动拣取 pending 任务（已在执行的任务不受影响） */
+    pub fn disable_auto_run(&self) {
+        *self.auto_run.lock().unwrap() = false;
+    }
+
     /** 启动后默认不自动执行任何任务，必须由用户点击「开始」启用 */
     pub fn is_auto_run(&self) -> bool {
         *self.auto_run.lock().unwrap()
