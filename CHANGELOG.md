@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### 修复
+
+- 修复 fresh 浏览器档案首次访问豆包弹出「下载电脑版」推广弹窗（Radix `role=dialog`，全视口固定定位）拦截提示词输入框、导致 `locator.click` 30s 超时的问题（task #16 首轮失败）：遮罩关闭逻辑抽取为 `sidecar/src/overlays.js`；新增 `waitAndDismissOverlays`——持续关闭并轮询直到连续 `stableMs` 内页面无可见遮罩（覆盖弹窗晚于 hydration 出现的时序）；应用在打开新对话页、输入提示词前、提示词已输入后均改为该等待式关闭；输入框点击增加「关闭遮罩后重试一次」兜底（与发送按钮一致）；Radix 关闭按钮选择器补充 `[data-slot="dialog-close"]` / `[data-slot="alert-dialog-close"]`
+- 修复 dev 模式 vite watch 误扫 scratch 构建目录 `target3/` 导致启动崩溃（EBUSY）：`vite.config.ts` watch.ignored 增加 `**/target3/**`，`.gitignore` 忽略 `target3/`
+
+### 验证
+
+- 2026-11-08 B5 多项目队列串行压测（task #15/#16，镊子 vs 奶瓶收纳盒测试项目，各 1 轮，auto 选号）：按创建顺序串行执行（`ORDER BY created_at ASC`），#15（doubao-main）21:39 完成 8/8 verified，#16（doubao-second）被自动拣取；#16 首轮因豆包 fresh 档案推广弹窗（「下载电脑版」Radix 对话框遮挡输入框）30s locator 超时落 `needs_manual_intervention`（未提交），人工清障后「继续执行」经 fresh 探测完整重跑并完成（1/1 verified）。9/9 图 SHA-256 与 DB 一致；accounts 计数回写；rotation cursor 2→4。验收 #13 ✅、#7 ✅
+- 新增 `sidecar/src/overlays.test.js`（headless Chromium 离线夹具，4 项：识别/关闭推广弹窗、晚于 hydration 出现弹窗的关闭、干净页不误判/快速返回），已接入 `scripts/run-tests.ps1`
+
 ## [v1.1.0] - 2026-11-08
 
 ### 新增

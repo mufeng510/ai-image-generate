@@ -36,6 +36,7 @@ const { chromium } = require('playwright');
 const { scanFolders } = require('./scanner');
 const { ImagePool } = require('./pool');
 const { downloadImage } = require('./downloader');
+const { dismissPageOverlays, waitAndDismissOverlays, setLogger } = require('./overlays');
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
 
@@ -86,6 +87,8 @@ function log(level, message) {
   if (LOG_LEVELS.indexOf(level) < 0) level = 'info';
   emit({ type: 'log', level, message: redact(String(message)), timestamp: new Date().toISOString() });
 }
+
+setLogger(log);
 
 /** 日志脱敏：去掉 Cookie/Authorization/Token/CSRF/会话类字段的值，保留键名与结构 */
 function redact(text) {
@@ -153,130 +156,7 @@ async function startBrowser(accountId, userDataDir) {
   return { ok: true };
 }
 
-/**
- * 通用遮罩/弹窗（广告、签到、推广等）自动关闭。
- *
- * 策略（按优先级，多轮重试直到没有可见遮罩）：
- *   1. 找到可见的弹窗容器（role=dialog / aria-modal / class 含 modal|overlay|mask|popup|advert|backdrop 等），
- *      点击容器内的关闭按钮（aria-label 含“关闭/Close”、class 含 close、.semi-modal-close、“关闭”文本按钮）。
- *   2. 按 Escape（多数弹窗支持）。
- *   3. 点击遮罩（mask/backdrop 类、覆盖视口大部分的 fixed/absolute 元素）的左上角空白处——很多半遮罩点击空白即关闭。
- * 每轮操作后重新验证；最多 maxPasses 轮。全部失败返回 false（调用方继续执行并记录诊断）。
- */
-const OVERLAY_CONTAINER_SELECTOR = [
-  'div[role="dialog"]',
-  'div[aria-modal="true"]',
-  '.semi-modal',
-  '[class*="modal" i]',
-  '[class*="overlay" i]',
-  '[class*="mask" i]',
-  '[class*="popup" i]',
-  '[class*="advert" i]',
-  '[class*="backdrop" i]',
-].join(',');
-
-const OVERLAY_CLOSE_SELECTOR = [
-  'button[aria-label*="关闭"]',
-  '[role="button"][aria-label*="关闭"]',
-  'button[aria-label*="close" i]',
-  '[role="button"][aria-label*="close" i]',
-  '.semi-modal-close',
-  '[class*="close" i]',
-  'button:has-text("关闭")',
-  '[role="button"]:has-text("关闭")',
-].join(',');
-
-/** 页面上是否仍存在可见且面积足够大的遮罩/弹窗容器 */
-async function hasVisibleOverlay(page) {
-  return await page.evaluate((sel) => {
-    const vw = window.innerWidth || 1;
-    const vh = window.innerHeight || 1;
-    const els = Array.from(document.querySelectorAll(sel));
-    return els.some((el) => {
-      const style = window.getComputedStyle(el);
-      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
-      const r = el.getBoundingClientRect();
-      if (r.width < 120 || r.height < 80) return false;
-      const coverage = (r.width * r.height) / (vw * vh);
-      const positioned = style.position === 'fixed' || style.position === 'absolute' || (Number(style.zIndex) || 0) >= 10;
-      // 全屏/大面积遮罩，或较大的固定定位弹窗
-      return positioned && coverage > 0.12;
-    });
-  }, OVERLAY_CONTAINER_SELECTOR).catch(() => false);
-}
-
-/** 尝试关闭所有可见遮罩/弹窗。返回成功关闭的弹窗数量。 */
-async function dismissPageOverlays(page, maxPasses = 4) {
-  let dismissed = 0;
-  for (let pass = 0; pass < maxPasses; pass++) {
-    if (!(await hasVisibleOverlay(page))) break;
-
-    // 1) 容器内的关闭按钮（从后往前的 DOM 顺序，通常后出现的在更上层）
-    const containers = page.locator(OVERLAY_CONTAINER_SELECTOR);
-    const count = await containers.count().catch(() => 0);
-    let closed = false;
-    for (let i = count - 1; i >= 0 && !closed; i--) {
-      const container = containers.nth(i);
-      if (!(await container.isVisible().catch(() => false))) continue;
-      const box = await container.boundingBox().catch(() => null);
-      if (!box || box.width < 120 || box.height < 80) continue;
-      const closeBtns = container.locator(OVERLAY_CLOSE_SELECTOR);
-      const btnCount = await closeBtns.count().catch(() => 0);
-      for (let j = btnCount - 1; j >= 0; j--) {
-        const btn = closeBtns.nth(j);
-        if (!(await btn.isVisible().catch(() => false))) continue;
-        try {
-          await btn.click({ timeout: 2000 });
-          await page.waitForTimeout(600);
-          if (!(await hasVisibleOverlay(page))) {
-            log('info', '遮罩/弹窗已通过关闭按钮关闭');
-            closed = true;
-            dismissed++;
-            break;
-          }
-        } catch (_) { /* 尝试下一个候选 */ }
-      }
-    }
-    if (closed) continue;
-
-    // 2) Escape
-    log('info', '检测到遮罩/弹窗，尝试 Escape 关闭');
-    await page.keyboard.press('Escape').catch(() => {});
-    await page.waitForTimeout(500);
-    if (!(await hasVisibleOverlay(page))) {
-      log('info', '遮罩/弹窗已通过 Escape 关闭');
-      dismissed++;
-      continue;
-    }
-
-    // 3) 点击遮罩左上角空白处（避开弹窗本体）
-    const backdrops = page.locator('[class*="mask" i],[class*="backdrop" i],[class*="overlay" i]');
-    const bdCount = await backdrops.count().catch(() => 0);
-    let backdropClosed = false;
-    for (let i = bdCount - 1; i >= 0; i--) {
-      const bd = backdrops.nth(i);
-      if (!(await bd.isVisible().catch(() => false))) continue;
-      const box = await bd.boundingBox().catch(() => null);
-      if (!box || box.width < 200 || box.height < 200) continue;
-      try {
-        // 左上角 8px 处基本都是遮罩空白区域（弹窗通常居中）
-        await bd.click({ position: { x: 8, y: 8 }, timeout: 2000 });
-        await page.waitForTimeout(500);
-        if (!(await hasVisibleOverlay(page))) {
-          log('info', '遮罩/弹窗已通过点击遮罩关闭');
-          backdropClosed = true;
-          dismissed++;
-          break;
-        }
-      } catch (_) { /* 尝试下一个候选 */ }
-    }
-    if (backdropClosed) continue;
-
-    log('warn', '未能自动关闭遮罩/弹窗（可人工关闭后继续）');
-    break;
-  }
-  return dismissed;
-}
+/* 遮罩/弹窗关闭逻辑已抽取至 ./overlays.js（hasVisibleOverlay / dismissPageOverlays / waitAndDismissOverlays） */
 
 /** 轮询页面，识别登录成功后触发 login_detected 事件（不触碰 Cookie，仅看页面文本） */
 function watchLogin(accountId, page, maxAttempts = 300) {
@@ -320,7 +200,7 @@ async function openLogin(accountId, userDataDir) {
     log('warn', `导航到豆包首页失败: ${err.message}`);
   });
   await page.waitForTimeout(1500);
-  await dismissPageOverlays(page);
+  await waitAndDismissOverlays(page, { timeoutMs: 6000, stableMs: 1200 });
   // 后台轮询登录状态（最长约 15 分钟），识别成功后由 Rust 端更新账号状态
   watchLogin(accountId, page);
   return { ok: true, url: page.url() };
@@ -729,7 +609,8 @@ async function generateImagesInner(cmd) {
     return { ok: false, reason: 'goto_failed', message: err.message };
   }
   await page.waitForTimeout(3000);
-  await dismissPageOverlays(page);
+  // 推广弹窗可能晚于 hydration 出现：持续关闭直到页面稳定干净
+  await waitAndDismissOverlays(page, { timeoutMs: 8000, stableMs: 1200 });
 
   // 生图流程必须处于「图像生成」模式，否则页面没有文件上传入口（切换到图像生成 tab）
   try {
@@ -804,7 +685,20 @@ async function generateImagesInner(cmd) {
     return { ok: false, reason: 'textbox_not_found' };
   }
   const textbox = page.locator('textarea,[contenteditable="true"]').first();
-  await textbox.click();
+  await waitAndDismissOverlays(page, { timeoutMs: 5000, stableMs: 600 }); // 输入前最后关闭遮罩
+  try {
+    await textbox.click({ timeout: 5000 });
+  } catch (err) {
+    // 输入框点击被遮罩拦截：再次关闭遮罩后重试一次（与发送按钮相同的兜底）
+    log('warn', `点击提示词输入框失败（${err.message}），尝试关闭遮罩后重试…`);
+    await waitAndDismissOverlays(page, { timeoutMs: 5000, stableMs: 800 });
+    try {
+      await textbox.click({ timeout: 5000 });
+    } catch (err2) {
+      await saveDiag('prompt_click_failed');
+      return { ok: false, reason: 'prompt_click_failed', message: err2.message };
+    }
+  }
   try {
     await page.keyboard.insertText(prompt);
   } catch (err) {
@@ -812,7 +706,7 @@ async function generateImagesInner(cmd) {
     return { ok: false, reason: 'prompt_insert_failed', message: err.message };
   }
   log('info', '提示词已输入');
-  await dismissPageOverlays(page); // 上传后弹窗可能再次出现
+  await waitAndDismissOverlays(page, { timeoutMs: 5000, stableMs: 800 }); // 上传后弹窗可能再次出现
 
   // 人工确认模式：上传完成、提示词已填，暂停等待用户确认后再提交
   if (cmd.pause_before_submit) {

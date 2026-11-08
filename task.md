@@ -1414,7 +1414,7 @@ README 中说明：
   - 文档 `docs/TESTING.md` 已更新（测试数、一键脚本、未覆盖项说明：真实 Doubao 浏览器 E2E 仍待具备账号环境后的用户监督复测）。
   - 2026-11-08 真实账号单轮全链路 E2E（用户监督）：任务 #9 完整走通 创建→扫描（`references/`）→抽 5 张→切换图像生成模式→上传→填写提示词→提交前确认暂停→用户点「继续执行」→发送→等待生成→提取 2 张→下载校验→completed。产物在 `output/20261108_134142_075/001.png|002.png`（SHA-256 与 `task_images.download_status='verified'` 均已入库）。
   - 2026-11-08 补测（用户监督）：3 轮多轮 E2E + 生成等待中暂停/继续（task #10：3 轮 completed，6/6 verified，resume 探测无重复提交）；账号阈值暂停（task #11：needs_manual_intervention + notice）；修复后复验（task #12：2/2 verified，账号 `logged_in` / submit_count 0→1 / success_count 5→6，修复 `1edc0f6`）。
-  - 仍待：wait_result 计时路径缺少确定性测试；超时/状态不明注入（B6）；多项目队列压测（B5）。
+  - 仍待：wait_result 计时路径缺少确定性测试；超时/状态不明注入（B6）。
 
 ## 23.3 最终验收对照
 
@@ -1426,13 +1426,13 @@ README 中说明：
 | 4 | 能正确递归扫描参考图片 | ✅ |
 | 5 | 能按文件夹独立抽取规则选择 5 张图片 | ✅ |
 | 6 | 能保存每轮抽图记录 | ✅（`references.json` + 数据库） |
-| 7 | 能管理多个豆包账号的独立登录状态 | 🟡（doubao-main 阈值暂停与 logged_in/计数回写已实测（#10/#11/#12）；多账号轮换、第二账号独立登录未实测） |
+| 7 | 能管理多个豆包账号的独立登录状态 | ✅（2026-11-08 B5：#15→doubao-main、#16→doubao-second 两任务 auto 轮换落点正确；second 完整跑通 提交→提取→下载→verified；submit_count 0→1、success_count 0→1、last_used_at 已回写；cursor 2→4） |
 | 8 | 能正常操作豆包网页完成生图 | ✅（2026-11-08 单轮全链路复测：确认节点 → 继续执行 → 生成 → 提取 → 下载） |
 | 9 | 能识别一轮生成的全部图片 | ✅ |
 | 10 | 能可靠保存可正常访问的原始图片资源 | ✅ |
 | 11 | 能校验下载文件完整性 | ✅ |
 | 12 | 能执行多轮任务 | ✅（2026-11-08 task #10：3 轮全部完成，current_round=3/3，累计 6 张全部 `verified`） |
-| 13 | 能管理多个项目的任务队列 | 🟡（功能齐备，未在多项目同队列压测） |
+| 13 | 能管理多个项目的任务队列 | ✅（2026-11-08 B5：镊子 #15 与奶瓶收纳盒 #16 各 1 轮入队，按创建顺序串行执行、无浏览器并发占用；两轮均完成；输出目录/账号归属正确；9/9 图 verified 且 SHA-256 与 DB 一致） |
 | 14 | 能暂停、继续、取消任务 | ✅（暂停+继续：#10，生成等待中暂停后 resume 无重复提交；阈值暂停后取消：#11；**真实生图中取消：#14**（doubao-second，提交后生成等待中点「取消」20s 内干净中止、无重复提交、任务落 cancelled、日志记录）） |
 | 15 | 软件关闭后能安全恢复未完成任务 | ✅（2026-11-08 本机重启验证：重启后未完成任务不自动执行，#8 显示「需人工处理 上次： 提交前」，原状态可见；手动「继续执行」即恢复入口） |
 | 16 | 不会因为状态不明而重复提交 | 🟡（生成等待中暂停→继续已实测无重复提交（#10）；超时/状态不明注入场景未实测） |
@@ -1448,6 +1448,46 @@ README 中说明：
 - `docs/TECHNICAL_VALIDATION.md` 的 Phase 0 结论基于源码分析，登录后环节的实测记录见 `docs/TESTING.md`；两者应结合阅读。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-08（推广弹窗遮罩自动关闭落地 + dev watch 修复）
+
+**背景：** B5 期间 doubao-second fresh 档案弹出「下载电脑版 使用完整功能」推广弹窗（Radix `role=dialog`，全视口固定定位），遮挡提示词输入框，`locator.click` 30s 超时 → #16 首轮 `needs_manual_intervention`（未提交）。
+
+**修复（sidecar，未动 Rust）：**
+- 遮罩逻辑抽取为 `sidecar/src/overlays.js`（`hasVisibleOverlay` / `dismissPageOverlays` / `waitAndDismissOverlays` + `setLogger` 注入脱敏日志）；`index.js` 改为引用，删除本地实现。
+- 新增 `waitAndDismissOverlays(page, { timeoutMs, stableMs, intervalMs })`：持续关闭并轮询直到连续 `stableMs`（默认 1200ms）内无可见遮罩——覆盖弹窗晚于 hydration 出现的时序（#16 事故主因：goto 后固定 3s 仅单次 dismiss）。
+- 调用点：打开新对话页（`timeoutMs: 8000, stableMs: 1200`）、提示词已输入后（5000/800）、登录页打开后（6000/1200）均改为等待式关闭；恢复页语义不变（resume 探测为 evaluate 不依赖遮罩，保留）。
+- 输入框 `textbox.click` 改为 5s 超时 + 失败时「关闭遮罩后重试一次」兜底（与发送按钮点击同一模式）；失败才落 `prompt_click_failed` 诊断（此前直接抛 30s 超时坍缩到 `unknown`）。
+- Radix 关闭按钮选择器补充 `[data-slot="dialog-close"]` / `[data-slot="alert-dialog-close"]`（推广弹窗实测关闭按钮 accessible name = "关闭"）。
+- 新增 `sidecar/src/overlays.test.js`（headless Chromium 离线夹具，4 项；含「晚 600ms 注入弹窗」用例复现 #16 时序）+ 接入 `scripts/run-tests.ps1`。
+
+**验证：** `node --check` 通过；`overlays.test.js` 4/4 通过；`scripts/run-tests.ps1` 除 Rust 段外全绿（Rust 段因 dev 实例占用 `target/debug` 无法原地编译，改 `cargo test --offline --target-dir target3`：40/40 通过）。**未做真实豆包验证**（fresh 档案 promo 需下次真实新鲜档案访问时验证；按产品选择「软件自动关闭」，后续真实场景观察即可）。
+
+**附带修复：** `vite.config.ts` watch.ignored 增加 `**/target3/**`；`.gitignore` 忽略 `target3/`（vite watch 误扫 scratch 构建目录锁文件导致 `EBUSY` 崩溃、`beforeDevCommand` 终止——本次会话已实发生）；dev 实例已重启。
+
+**文档：** CHANGELOG（Unreleased/修复+验证）、TESTING.md（新增 overlays 章节、测试总数 94→98）、task.md 验收状态不变。
+
+### 2026-11-08（B5 多项目队列串行压测 + resume fresh 重跑验证）
+
+**任务与账号：** #15（镊子，项目 2，auto 选号→doubao-main）与 #16（奶瓶收纳盒测试项目，项目 1，auto 选号→doubao-second）各 1 轮。创建时 rotation cursor 2→3→4。
+
+**队列串行：** 点击 #15「开始」启用本实例 auto_run；#15 21:39:02→21:39:53 完成（8/8 verified）；#16 于 21:39:53.48 被自动拣取（`ORDER BY created_at ASC LIMIT 1`），无并发窗口、无浏览器双占用。
+
+**#16 首轮失败 → 人工清障 → resume 完成：** doubao-second 浏览器档案为 fresh 档案，首次访问豆包弹出「下载电脑版」推广弹窗（Radix `radix-:modern-js-r192:`）遮挡提示词输入框；5 张参考图已上传，随后 `locator.click` 30s 超时（`subtree intercepts pointer events`）→ round `failed`、任务 `needs_manual_intervention`（**未提交**）。用户监督下人工关闭推广弹窗与「Chromium 未正确关闭」气泡后，任务行点「继续执行」→ resume 探测页面 `state=fresh` → 日志「页面为全新对话，未提交任何内容，转完整流程重新执行」→ 完整重跑 → 21:56:10 完成（1/1 verified）。
+
+**产物核对（python 只读核查 + 本地重算）：** 9/9 图 `verified`，SHA-256 与 DB 一致；两 completed 轮目录（`…\镊子\output\20261108_213904_489\`、`…\demo-project\output\20261108_215610_028\`）均含 `prompt.txt`/`references.json`/`task.json`；failed 轮目录 `20261108_213954_069` 仅留 `prompt.txt`/`references.json`（保留现场）。
+
+**账号回写：** doubao-second `submit_count` 0→1、`success_count` 0→1、`status` logged_in、`last_used_at` 已回写；doubao-main `submit_count` 2→3、`success_count` 5→8。
+
+**池耗尽：** 项目 1 的 13 张参考图全部被历史轮次用尽（0 张未用），failed 轮内 `005.jpg` 重复两次属于「池耗尽洗牌允许重复」的设计行为；completed round 重新抽出的 5 张全部不同。
+
+**验收：** 23.3 #7 ✅、#13 ✅；B5 todo 闭合（B3 遗留项随之闭合）。
+
+**新增观察（未改代码，待产品确认）：**
+- `dismissPageOverlays` 未能消化 fresh 档案的推广弹窗（疑似出现时序晚于 dismiss，或容器选择器未匹配该 Radix 对话框）；建议扩展 overlay 兜底（例如点「下次提醒我」），需产品确认是否抑制该推广。
+-「已提交，等待生成完成」日志在 `send_sidecar_cmd` 成功后立即写入（生图尚未真实提交），失败时「已提交」与 30s 后的 locator 超时同时出现，诊断可能误导；建议改为「已发送生图命令，等待生成完成」或延后到 sidecar 确认提交后写入。
+
+**验证：** DB 只读核查（python sqlite3）+ 9 个 SHA-256 重算 + 目录清单；TESTING.md 新增 B5 节。无代码改动，无测试计数变化。
 
 ### 2026-11-08（v1.1.0 发布 + B1 重启实测 + B2 元数据抽查 + B3/B4 多账号轮换与生图中取消）
 

@@ -1,5 +1,6 @@
 # scripts/run-tests.ps1
-# One-shot offline verification (does not launch the app or a real browser).
+# One-shot offline verification (does not launch the app or hit the real Doubao site;
+# the sidecar overlay test uses headless Chromium with local HTML fixtures only).
 # Usage: powershell -File scripts/run-tests.ps1
 # Exit code 0 = all checks pass.
 
@@ -23,6 +24,7 @@ Invoke-Step 'prototype: downloader' { node prototype/src/validate-downloader.js 
 Invoke-Step 'sidecar: downloader' { node sidecar/src/downloader.js }
 Invoke-Step 'sidecar: pool' { node sidecar/src/pool.js }
 Invoke-Step 'sidecar: scanner' { node sidecar/src/scanner.test.js }
+Invoke-Step 'sidecar: overlays (headless chromium)' { node sidecar/src/overlays.test.js }
 Invoke-Step 'Rust unit tests' {
     Push-Location src-tauri
     try { cargo test } finally { Pop-Location }

@@ -9,8 +9,9 @@
 | Sidecar 下载器单元测试 | 9 | 9 | 0 | ✅ |
 | 随机池单元测试 | 5 | 5 | 0 | ✅ |
 | Sidecar 参考图扫描器单元测试 | 7 | 7 | 0 | ✅ |
+| Sidecar 遮罩关闭单元测试 | 4 | 4 | 0 | ✅ |
 | Rust 单元测试 | 40 | 40 | 0 | ✅ |
-| **总计** | **94** | **94** | **0** | **✅ 全部通过** |
+| **总计** | **98** | **98** | **0** | **✅ 全部通过** |
 
 ## 测试环境
 
@@ -106,6 +107,17 @@
 | 超过 5 个文件夹：只抽 5 个文件夹 | ✅ |
 | 图片总数不足 5 时允许重复 | ✅ |
 | 空输入返回 reason=no_folders | ✅ |
+
+### sidecar/src/overlays.test.js (4 测试，2026-11-08 新增)
+
+| 测试用例 | 结果 |
+|---|---|
+| hasVisibleOverlay 识别推广弹窗，干净页不误判 | ✅ |
+| dismissPageOverlays 通过关闭按钮关闭推广弹窗 | ✅ |
+| waitAndDismissOverlays 处理晚于 hydration 出现的弹窗 | ✅ |
+| 干净页 waitAndDismissOverlays 快速返回 0 | ✅ |
+
+（fixture 为豆包 fresh 档案推广弹窗同构 HTML：`role=dialog` 全视口固定定位 + `aria-label="关闭"` 关闭按钮；headless Chromium，不访问真实豆包页面。）
 
 ### task_scheduler.rs / schema.rs / commands.rs (40 Rust 测试，2026-11-08 死代码清理后：移除 TaskStatus/ErrorClass 枚举及其两个 Display 测试)
 
@@ -210,11 +222,33 @@
 
 ### 2026-11-08 B3/B4：多账号轮换（部分）+ 真实生图中取消（task #13/#14）
 
-**B3 轮换**：#13（项目 #1，自动选择账号）→ 任务自动选 doubao-main（列表顺序第一个），2 张图完成、doubao-main 回写 `submit_count` 1→2、`last_used_at` 更新；游标推进到 1；#14（下一个 auto 任务）自动落到 **doubao-second**，证明列表顺序轮换生效。doubao-second 完成一次真实提交链路（见 B4）。剩余：B5 连续两个任务观察 second 直接使用情况并闭合验收 #7。
+**B3 轮换**：#13（项目 #1，自动选择账号）→ 任务自动选 doubao-main（列表顺序第一个），2 张图完成、doubao-main 回写 `submit_count` 1→2、`last_used_at` 更新；游标推进到 1；#14（下一个 auto 任务）自动落到 **doubao-second**，证明列表顺序轮换生效。doubao-second 完成一次真实提交链路（见 B4）。剩余：B5 连续两个任务观察 second 直接使用情况并闭合验收 #7。（B5 已于 2026-11-08 完成：#15→doubao-main、#16→doubao-second 两任务串行全链路跑通，见下节；验收 #7 闭合。）
 
 **B4 真实生图中取消（task #14，doubao-second）**：创建→自动选 doubao-second→提交生图→生成等待中点「取消」→20s 内干净中止（abort 生效，未下载文件产生）→任务落 `cancelled`、日志「任务已取消（已保留已下载图片）」、**不重复提交**；doubao-second `submit_count` 保持 0（提交未获确认，不计提交——符合「不确定不计入」原则）。注意：豆包页面上这次生图可能已被提交并在服务端执行完（客户端不重发、不下载），属取消语义。
 
 附带观察：本实例中「开始」启用 auto_run 闸门后，新建的 pending 任务（#14）无需再点「开始」即被主循环自动捡取执行（v1.1.0 起设置页可关闭该闸门）。
+
+### 2026-11-08 B5：多项目队列串行压测（task #15/#16）
+
+环境：dev 实例（HEAD `8aa727c`）；镊子项目（id=2）与奶瓶收纳盒测试项目（id=1）各建 1 轮任务，账号 auto 自动选择，`account_rotation_cursor` 2 → 4。时间均为本地（UTC+8）；DB `created_at` 为 UTC。
+
+| 测试项 | 预期 | 结果 |
+|---|---|---|
+| 队列创建顺序 | #15（镊子）先建、#16（奶瓶收纳盒）后建 | ✅ 两任务 `created_at` 顺序与建单顺序一致 |
+| auto 选号 | 第一个落 doubao-main（cursor 2→3）、第二个落 doubao-second（cursor 3→4） | ✅ DB 实测 #15 `account_id=1`、#16 `account_id=2`；cursor 落点 3→4 |
+| 串行执行 | `ORDER BY created_at ASC LIMIT 1` 拣取，同时仅一个任务占用浏览器/sidecar | ✅ #15 于 21:39:02（点开始）执行、21:39:53 完成；#16 于 21:39:53.48 被自动拣取（紧随 #15 完成时刻），无并发段 |
+| resume 恢复 | 任务 `needs_manual_intervention` 后「继续执行」可安全恢复，不重复提交 | ✅ #16 首轮因推广弹窗 30s 超时落 needs_manual_intervention（未提交）；人工清障后 resume 探测 fresh → 完整重跑 → 21:56:10 completed（1/1 verified） |
+| 输出目录/账号归属 | 各项目独立 output，账号归属与任务一致 | ✅ #15：`C:\Users\mi\Pictures\参考图\镊子\output\20261108_213904_489\`（8 张图，账号 1）；#16：`…\20261108_215610_028\`（1/1 图，账号 2）；failed round 目录 `20261108_213954_069` 保留（仅 prompt.txt/references.json，无 task.json） |
+| 产物与校验 | SHA-256 与 DB 一致、`verified` | ✅ 9/9 图 verified；本地重算 SHA-256 与 `task_images.sha256` 全部一致；`references.json`/`task.json`/`prompt.txt` 齐备 |
+| 元数据 | 任务/轮次状态最终落 `completed`、`current_round=1` | ✅ #15 round completed（8 张）；#16 round 1 failed → 手动清障后 retry round 1 completed（1 张） |
+
+**#16 首轮失败（真实账号首次访问 fresh 档案弹窗，非模拟）**：doubao-second 浏览器档案为全新档案，首次访问豆包弹出「下载电脑版 使用完整功能」推广弹窗（Radix `radix-:modern-js-r192:`），恰好位于提示词输入框上方；5 张参考图已成功上传，随后 `locator.click('textarea,[contenteditable="true"]')` 30s 超时（`subtree intercepts pointer events`）→ 轮次 `failed`、任务 `needs_manual_intervention`（**未提交、无重复提交风险**）；同一窗口还同时存在「Chromium 未正确关闭」恢复气泡。用户监督下人工关闭两个遮罩后，任务行点「继续执行」→ resume 探测页面为 fresh（`state=fresh`）→ 日志「页面为全新对话，未提交任何内容，转完整流程重新执行」→ 完整重跑（重新导航 `https://www.doubao.com/chat/`、重新扫描、重新抽 5 张、上传、提交）→ 21:56 完成、下载 1/1 `verified`。doubao-second `submit_count` 0→1、`success_count` 0→1、`last_used_at` 已回写。
+
+观察与欠账：
+- sidecar `dismissPageOverlays` 未能消化该 fresh 档案的推广弹窗（可能出现时序晚于 dismiss 或容器选择器未匹配该 Radix 对话框）；2026-11-08 已修复：遮罩逻辑抽取为 `sidecar/src/overlays.js`，新增 `waitAndDismissOverlays`（持续关闭直到连续 stableMs 无可见遮罩，覆盖晚于 hydration 出现的弹窗），goto / 输入框 / 提示词已输入后三处改为等待式关闭，输入框点击失败时「关闭遮罩后重试一次」（test #16 事故路径的直接修复），新增 4 项离线回归测试。
+-「已提交，等待生成完成」日志行在 `send_sidecar_cmd` 成功后即写入（约提前几十毫秒，生图尚未真实提交）；#16 失败时日志同时出现「已提交」与 30s 后的 locator 超时，诊断时可能误导。建议改为「已发送生图命令，等待生成完成」或延后到 sidecar 确认提交后写入。
+- 项目 1 的 13 张参考图已被历史轮次用尽（pool 中全部 `last_used_at` < 本轮，0 张未用），failed 轮内 `005.jpg` 出现两次属于「池耗尽洗牌允许重复」的设计行为；completed round 重新抽出的 5 张全不同。
+- 恢复后本实例 `auto_run` 闸门仍开启（v1.1.0 起可在设置页关闭，重启默认关闭）。
 
 ### 2026-11-08 账号自定义阈值暂停实测（task #11）
 
@@ -272,7 +306,8 @@ cargo tauri build
 ## 已知未覆盖项（后续）
 
 - 真实浏览器 E2E（Doubao 页面全流程）：2026-11-03 单轮通过；2026-11-08 3 轮多轮（task #10）+ 生成等待中暂停/继续 全部通过（详见上节）。
-- 取消任务 / 软件关闭恢复：仍未在真实账号复测（取消 2026-11-03 曾出现但未系统验证；2026-11-08 task #11 取消仅覆盖阈值暂停后的取消）。
+- 取消任务 / 软件关闭恢复：2026-11-08 已覆盖——取消：B4（task #14，生成等待中取消 20s 内干净中止）+ B5 期间 failed 轮的恢复路径；关闭恢复：B1（dev 与装机版重启后未完成任务不自动执行）。
+- 多项目队列串行：2026-11-08 B5 已测（#15→#16，两项目串行全链路完成，详见 B5 节）。
 - 账号阈值暂停（image_threshold）：已测（task #11）；auto 选号跳过 login_pending 的行为未在真实环境复测（账号现已回写 logged_in）。
 - 参数继承（P0-4：全局默认 → 项目覆盖 → 继承）：已完成真实页面参数验证与单元测试覆盖（`merge_gen_params`），「全局 → 项目 → 继承」解析链离线已测；「apply 写入豆包页面」的真实 E2E 未单独验证（gen_params 默认仅记录不下发）。
 - 集成级任务状态机测试（require 真实 Doubao），当前以 `wait_result` 超时→失败路径的 `cargo test` 级别覆盖，计时路径缺少确定性测试。
@@ -286,8 +321,9 @@ cargo tauri build
 | Sidecar 下载器 | sidecar/src/downloader.js | 9 | 100% |
 | 持久化随机池 | sidecar/src/pool.js | 5 | 100% |
 | 参考图扫描与抽取 | sidecar/src/scanner.test.js | 7 | 100% |
+| 遮罩关闭逻辑 | sidecar/src/overlays.test.js | 4 | 100% |
 | Rust 调度/迁移/命令 | src-tauri/Cargo | 40 | 100% |
-| **总计** | - | **94** | **100%** |
+| **总计** | - | **98** | **100%** |
 
 ## 文档完整性检查
 
@@ -306,5 +342,5 @@ cargo tauri build
 
 ---
 
-*测试报告更新时间：2026-11-08（含 3 轮多轮 E2E + 暂停/继续 + 阈值暂停实测）*
+*测试报告更新时间：2026-11-08（含 3 轮多轮 E2E + 暂停/继续 + 阈值暂停 + B1/B3/B4/B5 实测）*
 *适用版本：v1.0.0*

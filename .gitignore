@@ -21,3 +21,5 @@ updater.key
 
 # Downloaded bundled runtime (scripts/fetch-runtime.ps1); not committed
 runtime/
+# Local scratch cargo target dir used to build/test while dev instance holds target\debug (do not commit)
+target3/
