@@ -1330,7 +1330,7 @@ README 中说明：
   - 验证：`cargo test` 8 项通过；`node --check sidecar/src/index.js` 通过。**已真实复测**（2026-11-08：task #10 生成等待中暂停 → 继续，resume 探测页面识别已生成 2 张 → 提取下载，无重复提交）。
 - [x] **P0-3 启动恢复**：软件启动后不得自动执行上次未完成任务；应展示未完成任务、上次状态，并由用户手动恢复。
   - 完成 2026-11-07：新增 `recover_interrupted_tasks()`（`main.rs` 启动时调用），把上次执行中的任务标记为 `needs_manual_intervention` 并写入 `interrupted_status`，未完成轮次标记为 `paused`；调度器增加 `auto_run` 闸门，启动后为 `false`，只有用户点击「开始/继续」才启用；任务列表显示「上次：生成中」等原状态。
-  - 验证：`cargo test` 8 项通过；`npm run build` 通过。**待重启实测**（不会自动跑、原状态可见）。
+  - 验证：`cargo test` 8 项通过；`npm run build` 通过。**重启实测通过**（2026-11-08 本机：dev 与装机版关闭后重启，未完成任务不自动执行，#8 显示「需人工处理 上次： 提交前」，原状态可见）。
 - [x] **P0-4 生图参数**：全局默认参数、项目覆盖参数、参数继承；只实现经真实网页验证的参数（当前完全缺失）。
   - 2026-11-07 完成：
     - 真实页面调查（见 `docs/DOUBAO_IMAGE_PARAMS.md`）：发现入口「图像生成」模式，调查到的真实参数：模型 4 种（Seedream 5.0 Pro / 5.0 Flash / 4.5 / 4.0）、比例 8 种（自动 / 9:16 / 2:3 / 3:4 / 1:1 / 4:3 / 3:2 / 16:9）、风格 33 种；模板面板在本账号为占位，不实现。
@@ -1352,7 +1352,7 @@ README 中说明：
   - 验证：`cargo test` 11 项通过；`npm run build` 通过。**已真实复测**（2026-11-08 task #10：3 轮全部 completed，current_round=3/3，累计下载 6 张，6/6 `verified`）。
 - [x] **P0-7 输出规范**：轮次目录 `yyyyMMdd_HHmmss_fff`（冲突递增后缀）、图片 `001.png`、每轮写入 `prompt.txt` / `references.json` / `task.json`。
   - 完成 2026-11-07：`allocate_round_dir` 生成目录并处理同名冲突；目录写入数据库 `task_rounds.output_dir`；sidecar 下载文件名为 `001.png` 起步（按魔数保留真实扩展名，如 `001.jpg`）；`prompt.txt`、`references.json`（路径/SHA-256/文件夹/抽取时间）、`task.json`（任务信息/下载结果/大小/SHA-256）每轮写入。
-  - 验证：`cargo test` 含目录命名与冲突单元测试，11 项通过。**部分真实核对**（2026-11-08 task #10：3 个轮次目录产出、6/6 图片 `verified`；`task.json`/`references.json` 内容未单独抽查）。
+  - 验证：`cargo test` 含目录命名与冲突单元测试，11 项通过。**已真实核对**（2026-11-08：4 个已完成轮次目录（#9/#10×3/#12）全部含 `prompt.txt`/`references.json`/`task.json`；references.json 与 DB `task_rounds.references_json` 完全一致；本地重算 SHA-256 与 `task_images.sha256` 一致；4 轮共 6 张图全部 `verified`）。
 
 ### P1 — 功能完整性
 
@@ -1434,7 +1434,7 @@ README 中说明：
 | 12 | 能执行多轮任务 | ✅（2026-11-08 task #10：3 轮全部完成，current_round=3/3，累计 6 张全部 `verified`） |
 | 13 | 能管理多个项目的任务队列 | 🟡（功能齐备，未在多项目同队列压测） |
 | 14 | 能暂停、继续、取消任务 | 🟡（暂停+继续已真实通过（#10，生成等待中暂停后 resume 无重复提交）；取消仅阈值暂停后取消已测（#11），真实生图中取消未系统验证） |
-| 15 | 软件关闭后能安全恢复未完成任务 | 🟡（已实现并离线代码验证，未在真实重启后端到端验证） |
+| 15 | 软件关闭后能安全恢复未完成任务 | ✅（2026-11-08 本机重启验证：重启后未完成任务不自动执行，#8 显示「需人工处理 上次： 提交前」，原状态可见；手动「继续执行」即恢复入口） |
 | 16 | 不会因为状态不明而重复提交 | 🟡（生成等待中暂停→继续已实测无重复提交（#10）；超时/状态不明注入场景未实测） |
 | 17 | 能处理登录失效、验证码和网页结构变化 | 🟡（已实现登录失效/验证码/结构变化检测，未做真实故障注入） |
 | 18 | 能保留错误截图和诊断信息 | 🟡（已实现 URL/截图保存，未在真实失败场景复现验证） |
@@ -1448,6 +1448,16 @@ README 中说明：
 - `docs/TECHNICAL_VALIDATION.md` 的 Phase 0 结论基于源码分析，登录后环节的实测记录见 `docs/TESTING.md`；两者应结合阅读。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-08（v1.1.0 发布 + B1 重启实测 + B2 元数据抽查）
+
+**v1.1.0 发布**：版本 bump 1.0.0 → 1.1.0（package.json/Cargo.toml/Cargo.lock/package-lock.json）；`CHANGELOG.md` [Unreleased] 归档为 [v1.1.0] - 2026-11-08 并附装机冒烟记录；`release.yml` releaseBody 改为中文变更摘要；tag `v1.1.0` 推送至 `mufeng510/ai-image-generate` 触发 Release workflow（含 update.json + .sig）。
+
+**B1（验收 #15 关闭→恢复实测，本机）**：dev 与装机版关闭后重启，未完成任务均不会被自动执行；#8 显示「需人工处理 上次： 提交前」；重启前后两次启动均确认无任务进入 running 态。→ 23.3 #15 改 ✅。
+
+**B2（P0-7 元数据抽查，只读）**：核对全部 5 个已完成轮次目录（task #9/#10×3/#12）的 `prompt.txt`/`references.json`/`task.json`——references.json 与 DB `task_rounds.references_json` 逐字段一致；4 轮中 6 张图全部 `download_status='verified'` 且本地重算 SHA-256 与库中一致；task.json 记录 finished_at/images（含路径/SHA-256/size/签名 URL）。
+
+**观察（未改，待评估）**：`task.json` 的 `images[].url` 保存了豆包签名 URL（含 `x-signature` 等参数）——超出任务规范要求的字段、且为限时签名；若要最小化，可考虑不在 task.json 持久化 URL（改动前需产品确认）。
 
 ### 2026-11-08（auto_run 闸门设置入口 + 文档一致性修正）
 

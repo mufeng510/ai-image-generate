@@ -202,6 +202,12 @@
 3. 账号阈值暂停路径已实测通过（任务 #11，见下节）。
 4. 复验（任务 #12，1 轮真实生图）：任务完成、2/2 `verified`、SHA-256 一致；`accounts` 实测回写——doubao-main `submit_count` 0→1、`success_count` 5→6、`status='logged_in'`。另观察到：本实例中「开始」打开的 auto_run 闸门（`Scheduler::auto_run`，进程级，一旦启用不再关闭）导致后续新建的 pending 任务无需再点「开始」即被主循环自动拣取执行——属有设计意味的行为（「开始」=为本实例启用自动执行）。**跟进（同日确认）**：已新增设置页「自动拣取队列中的待执行任务」开关（`scheduler_auto_run_get` / `scheduler_auto_run_set`），关闭后停止自动拣取 pending 任务（已在执行的任务不受影响），应用重启后默认关闭。
 
+### 2026-11-08 重启恢复 + 元数据抽查（B1/B2）
+
+**B1 重启恢复（本机，dev + 装机版）**：关闭→重启两次，未完成任务均未被自动执行；#8 显示「需人工处理 上次： 提交前」；任务队列其他行（#9–#12）状态正确显示；无任务进入 running 态。
+
+**B2 元数据抽查（只读）**：全部 5 个已完成轮次目录（task #9/#10×3/#12）含 `prompt.txt` / `references.json` / `task.json`；`references.json` 与 DB `task_rounds.references_json` 逐字段一致；6/6 已下载图 `download_status='verified'` 且本地重算 SHA-256 与 `task_images.sha256` 一致。
+
 ### 2026-11-08 账号自定义阈值暂停实测（task #11）
 
 环境：账号 #1 已有 9 张 verified 图；将其 `image_threshold` 临时设为 1 → 创建 1 轮任务并开始（显式选择账号 #1）→ 任务在第 1 轮开始前即暂停：
