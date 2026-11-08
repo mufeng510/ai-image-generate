@@ -9,10 +9,16 @@
 - 修复 dev/打包环境下 sidecar 无法被 Node 执行的问题：spawn 前剥离 Windows `\\?\` 前缀（`lstat 'C:' EISDIR` 根因）
 - 重试路径的等待/轮询同步只统计真实生成产物
 - 任务状态通知携带失败原因（日志行与通知中心气泡/列表显示「原因：...」，如 `upload_input_not_found`）
+- 轮次恢复完成后清空 `failure_reason`（暂停阶段写入的中断原因不再残留在已 `completed` 的轮次上）
+- 账号状态与计数回写：生成/提取成功即视为账号会话有效，自动置 `logged_in`（避免 auto 选号把可用账号当未登录跳过）；`submit_count` 在每次成功提交（含人工确认节点的「继续执行」代点发送）时累加；`success_count` 在轮次完成且成功下载 ≥1 张时累加（resume 页面探测路径不重复计数提交）
 
 ### 验证
 
 - 2026-11-08 真实账号单轮全链路实测通过（任务 #9）：创建 → 扫描 references/ → 上传 → 提示词 → 提交前确认暂停 →「继续执行」→ 发送 → 生图 → 提取 → 下载 → 校验，产物 `001.png`/`002.png` 均 `download_status='verified'`。
+- 2026-11-08 真实账号 3 轮多轮 E2E + 暂停/继续（任务 #10，HEAD 0e281f4）：创建 3 轮 → 生成等待中点击暂停（任务/轮次正确落 `paused`）→「继续」经页面状态探测识别已生成 2 张图并提取下载、**无重复提交** → 第 2/3 轮按 `run_rounds_loop` 自动完成 → 6/6 张 `verified`，本地重算 SHA-256 全部一致；输出目录命名规范、`task_rounds` 3/3 `completed`。
+- 2026-11-08 账号自定义阈值暂停实测（任务 #11，threshold=1，账号 #1 已有 9 张 verified 图）：任务在第 1 轮开始前即暂停（`needs_manual_intervention`，`interrupted_status='account_threshold_reached'`），通知中心与执行日志均有记录，全程未消耗生图额度；测后阈值恢复为 0、任务已取消。
+- 2026-11-08 修复复验（任务 #12，1 轮）：修复后构建完成一轮真实生图（2/2 `verified`，SHA-256 一致）；`accounts` 计数实测回写——doubao-main `submit_count` 0→1、`success_count` 5→6、`status='logged_in'`。注意：任务创建后无需点「开始」即开始执行——本实例中「开始」启用的 auto_run 闸门在任务 #11 时已打开且不会关闭，新建的 pending 任务被主循环自动拣取。
+- 历史数据回填（随上述修复）：doubao-main 置为 `logged_in`、`success_count=5`（按 verified 轮次重算）；`task_rounds` 中已完成轮次的陈旧 `failure_reason` 已清空（任务 #10 round 1）。
 
 ## [v1.0.0] - 2026-11-07
 

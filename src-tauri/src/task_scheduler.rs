@@ -1267,6 +1267,16 @@ fn account_over_threshold(conn: &rusqlite::Connection, account_id: i64) -> bool 
     }
 }
 
+/** 生图成功提交后累计账号提交次数（不重复计数 resume 的页面探测路径） */
+fn bump_account_submit_count(account_id: i64) {
+    if let Ok(conn) = get_connection() {
+        let _ = conn.execute(
+            "UPDATE accounts SET submit_count = COALESCE(submit_count, 0) + 1 WHERE id = ?1",
+            rusqlite::params![account_id],
+        );
+    }
+}
+
 /** 自动选择：排除未登录与已达自定义阈值的账号，按列表顺序回绕轮换（整个选择在一个 IMMEDIATE 事务内完成） */
 pub(crate) fn auto_pick_account_id(conn: &rusqlite::Connection) -> Result<i64, String> {
     conn.execute_batch("BEGIN IMMEDIATE")
@@ -1683,6 +1693,9 @@ async fn run_single_round(
         return Err(());
     }
 
+    // 生图已确认提交（generate_images 成功）：累计账号提交次数
+    bump_account_submit_count(account_id);
+
     // 5~8. 提取 → 下载 → 校验
     match finish_after_generation(
         app,
@@ -1993,14 +2006,14 @@ async fn finish_after_generation(
             )
         } else {
             tx.execute(
-                "UPDATE task_rounds SET status = ?1, success_count = ?2, completed_at = ?3 WHERE id = ?4",
+                "UPDATE task_rounds SET status = ?1, success_count = ?2, failure_reason = NULL, completed_at = ?3 WHERE id = ?4",
                 rusqlite::params![round_status, success_count, now_round, round_id],
             )
         };
-        // 记录账号最近使用时间（用于按列表轮换参考）
+        // 提取/生成成功即证明账号会话有效：回写 logged_in 与轮次计数，避免 auto 选号跳过可用账号
         let _ = tx.execute(
-            "UPDATE accounts SET last_used_at = ?1 WHERE id = ?2",
-            rusqlite::params![now_round, account_id],
+            "UPDATE accounts SET last_used_at = ?1, status = 'logged_in', success_count = COALESCE(success_count, 0) + ?2 WHERE id = ?3",
+            rusqlite::params![now_round, if success_count > 0 { 1i64 } else { 0i64 }, account_id],
         );
         let _ = db_write_log(&tx, Some(tid), "info",
             &format!("本轮下载完成：成功 {}/{} 张", success_count, total));
@@ -2189,6 +2202,11 @@ async fn resume_task_inner(app: &AppHandle, scheduler: &Arc<Scheduler>, tid: i64
         return Ok(());
     }
 
+    // submit_pending（人工确认提交前）下 resume_generate 代替用户点击了一次「发送」，计入提交次数
+    if task.interrupted_status.as_deref() == Some("confirm_before_submit") {
+        bump_account_submit_count(account_id);
+    }
+
     // 页面已有生成图（或等待后出现）：提取 → 下载 → 校验，然后继续剩余轮次
     let (round_dir, prompt_snapshot) = load_round_resume_context(round_id, &project_root, round_number);
     let prompt = if prompt_snapshot.trim().is_empty() {
@@ -2345,6 +2363,9 @@ async fn resume_selection_round(
         set_task_status(app, tid, status, &format!("生图未完成（{}）: {} {}", reason, msg, log));
         return Ok(());
     }
+
+    // 生图已确认提交（generate_images 成功）：累计账号提交次数
+    bump_account_submit_count(account_id);
 
     let round_dir = output_dir
         .map(std::path::PathBuf::from)
