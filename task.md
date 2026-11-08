@@ -1311,7 +1311,7 @@ README 中说明：
 - [x] **基础界面**：仪表盘、项目、账号、任务队列、任务详情、日志、设置七个页面（`src/pages/`）。
 - [x] **安装包与更新配置**：NSIS 安装包可生成；updater 公钥、GitHub Release 端点、发布工作流已配置（`src-tauri/tauri.conf.json`、`.github/workflows/release.yml`）。
 - [x] **项目文档**：README / README_EN / ARCHITECTURE / TECHNICAL_VALIDATION / DEVELOPMENT / TESTING / USER_GUIDE / CHANGELOG 八份齐全。
-- [x] **现有单元测试**：提取器 15、下载器 18、Sidecar 下载器 9、随机池 5、扫描器 7、Rust 42，共 96 项，全部通过（2026-11-08 更新）。
+- [x] **现有单元测试**：提取器 15、下载器 18、Sidecar 下载器 9、随机池 5、扫描器 7、Rust 40，共 94 项，全部通过（2026-11-08 更新；同日死代码清理：移除 TaskStatus/ErrorClass 枚举及其 2 个 Display 测试）。
 
 ## 23.2 未完成
 
@@ -1450,6 +1450,19 @@ README 中说明：
 - 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-08（死代码/未使用变量清理）
+
+**背景**：1.0.0 release 构建出现 7 条 warning，逐项处理。
+
+**改动**：
+- `task_scheduler.rs`：删除 `TaskStatus`/`ErrorClass` 枚举（仅被测试使用的状态机字符串表）及其 Display 测试 2 个；删除 `Scheduler::stop_sidecar`（无人调用，sidecar 生命周期由进程退出处理）；移除仅枚举使用的 serde import。
+- `commands.rs`：`sha256_hex` 标记 `#[cfg(test)]`（仅已知向量测试使用）；删除前端从未调用的原型 IPC 命令 `task_create_round` / `task_add_image` / `task_update_round` 及其 payload 结构与 invoke_handler 注册。
+- `main.rs`：删除 3 个 invoke_handler 注册项。
+
+**验证**：`cargo build --offline` 0 warning；`cargo test` 40 项全过（原 42）；`scripts/run-tests.ps1` 全部离线检查通过；`npx tsc --noEmit` 通过。
+
+**文档**：`docs/TESTING.md` 用例表/统计同步为 40 项（总计 94）；`CHANGELOG.md` Unreleased 新增「清理」段。
 
 ### 2026-11-08（1.0.0 发布包构建 + 装机冒烟）
 

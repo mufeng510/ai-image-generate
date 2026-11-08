@@ -13,33 +13,6 @@ pub struct TaskStartPayload {
     pub task_id: i64,
 }
 
-#[derive(Deserialize)]
-pub struct TaskCreateRoundPayload {
-    pub task_id: i64,
-    pub round_number: i64,
-    pub prompt_snapshot: Option<String>,
-    pub references_json: Option<String>,
-}
-
-#[derive(Deserialize, Clone)]
-pub struct TaskAddImagePayload {
-    pub task_round_id: i64,
-    pub image_index: i64,
-    pub original_url: Option<String>,
-    pub saved_path: Option<String>,
-    pub sha256: Option<String>,
-    pub file_size: Option<i64>,
-    pub format: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct TaskUpdateRoundPayload {
-    pub round_id: i64,
-    pub status: Option<String>,
-    pub success_count: Option<i64>,
-    pub failure_reason: Option<String>,
-}
-
 /** 确保 sidecar 已启动（供登录等非任务型命令使用） */
 async fn manager_ensure_sidecar(app: &AppHandle, scheduler: &Scheduler) -> Result<(), String> {
     scheduler.start_sidecar(app).await
@@ -551,6 +524,7 @@ fn unique_destination(dest: &std::path::Path) -> Option<std::path::PathBuf> {
     None
 }
 
+#[cfg(test)]
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(bytes);
@@ -1709,117 +1683,6 @@ pub async fn task_list_images(round_id: i64) -> Result<Vec<TaskImage>, String> {
         })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub async fn task_create_round(
-    app: AppHandle,
-    payload: TaskCreateRoundPayload,
-) -> Result<TaskRound, String> {
-    let conn = get_connection().map_err(|e| e.to_string())?;
-    let now = Utc::now().to_rfc3339();
-    conn.execute(
-        "INSERT INTO task_rounds (task_id, round_number, prompt_snapshot, references_json, status, submitted_at) VALUES (?1, ?2, ?3, ?4, 'selecting_images', ?5)",
-        rusqlite::params![payload.task_id, payload.round_number, payload.prompt_snapshot, payload.references_json, now],
-    )
-    .map_err(|e| e.to_string())?;
-    let last_id = conn.last_insert_rowid();
-    Ok(TaskRound {
-        id: Some(last_id),
-        task_id: Some(payload.task_id),
-        round_number: Some(payload.round_number),
-        prompt_snapshot: payload.prompt_snapshot,
-        references_json: payload.references_json,
-        output_dir: None,
-        status: Some("selecting_images".to_string()),
-        submitted_at: Some(now),
-        completed_at: None,
-        success_count: Some(0),
-        failure_reason: None,
-    })
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub async fn task_add_image(
-    app: AppHandle,
-    payload: TaskAddImagePayload,
-) -> Result<TaskImage, String> {
-    let conn = get_connection().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO task_images (task_round_id, image_index, original_url, saved_path, sha256, file_size, format, download_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending')",
-        rusqlite::params![
-            payload.task_round_id,
-            payload.image_index,
-            payload.original_url,
-            payload.saved_path,
-            payload.sha256,
-            payload.file_size,
-            payload.format,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-    let last_id = conn.last_insert_rowid();
-    Ok(TaskImage {
-        id: Some(last_id),
-        task_round_id: Some(payload.task_round_id),
-        image_index: Some(payload.image_index),
-        original_url: payload.original_url,
-        saved_path: payload.saved_path,
-        sha256: payload.sha256,
-        file_size: payload.file_size,
-        format: payload.format,
-        download_status: Some("pending".to_string()),
-    })
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub async fn task_update_round(
-    app: AppHandle,
-    payload: TaskUpdateRoundPayload,
-) -> Result<TaskRound, String> {
-    let conn = get_connection().map_err(|e| e.to_string())?;
-    let now = Utc::now().to_rfc3339();
-    let mut updates = Vec::new();
-    let mut params: Vec<rusqlite::types::Value> = Vec::new();
-    if let Some(status) = &payload.status {
-        updates.push("status = ?".to_string());
-        params.push(rusqlite::types::Value::Text(status.clone()));
-    }
-    if let Some(success_count) = payload.success_count {
-        updates.push("success_count = ?".to_string());
-        params.push(rusqlite::types::Value::Integer(success_count));
-    }
-    if let Some(failure_reason) = &payload.failure_reason {
-        updates.push("failure_reason = ?".to_string());
-        params.push(rusqlite::types::Value::Text(failure_reason.clone()));
-    }
-    if payload.status.as_deref() == Some("completed") || payload.status.as_deref() == Some("failed") {
-        updates.push("completed_at = ?".to_string());
-        params.push(rusqlite::types::Value::Text(now.clone()));
-    }
-    updates.push("updated_at = ?".to_string());
-    params.push(rusqlite::types::Value::Text(now));
-    params.push(rusqlite::types::Value::Integer(payload.round_id));
-    let sql = format!("UPDATE task_rounds SET {} WHERE id = ?{}", updates.join(", "), params.len());
-    conn.execute(&sql, rusqlite::params_from_iter(params))
-        .map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, task_id, round_number, prompt_snapshot, references_json, output_dir, status, submitted_at, completed_at, success_count, failure_reason FROM task_rounds WHERE id = ?1").map_err(|e| e.to_string())?;
-    let row = stmt.query_row([payload.round_id], |row| {
-        Ok(TaskRound {
-            id: row.get(0)?,
-            task_id: row.get(1)?,
-            round_number: row.get(2)?,
-            prompt_snapshot: row.get(3)?,
-            references_json: row.get(4)?,
-            output_dir: row.get(5)?,
-            status: row.get(6)?,
-            submitted_at: row.get(7)?,
-            completed_at: row.get(8)?,
-            success_count: row.get(9)?,
-            failure_reason: row.get(10)?,
-        })
-    }).map_err(|e| e.to_string())?;
-    Ok(row)
 }
 
 #[tauri::command(rename_all = "snake_case")]

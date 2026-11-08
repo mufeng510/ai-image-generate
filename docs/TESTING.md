@@ -9,8 +9,8 @@
 | Sidecar 下载器单元测试 | 9 | 9 | 0 | ✅ |
 | 随机池单元测试 | 5 | 5 | 0 | ✅ |
 | Sidecar 参考图扫描器单元测试 | 7 | 7 | 0 | ✅ |
-| Rust 单元测试 | 42 | 42 | 0 | ✅ |
-| **总计** | **96** | **96** | **0** | **✅ 全部通过** |
+| Rust 单元测试 | 40 | 40 | 0 | ✅ |
+| **总计** | **94** | **94** | **0** | **✅ 全部通过** |
 
 ## 测试环境
 
@@ -107,13 +107,11 @@
 | 图片总数不足 5 时允许重复 | ✅ |
 | 空输入返回 reason=no_folders | ✅ |
 
-### task_scheduler.rs / schema.rs / commands.rs (42 Rust 测试)
+### task_scheduler.rs / schema.rs / commands.rs (40 Rust 测试，2026-11-08 死代码清理后：移除 TaskStatus/ErrorClass 枚举及其两个 Display 测试)
 
 | 测试用例 | 结果 |
 |---|---|
-| test_task_status_display | ✅ |
 | test_scheduler_new | ✅ |
-| test_error_class_display | ✅ |
 | 控制状态机（Running/Pause/Cancel） | ✅ |
 | auto_run 闸门 | ✅ |
 | is_current | ✅ |
@@ -274,8 +272,8 @@ cargo tauri build
 | Sidecar 下载器 | sidecar/src/downloader.js | 9 | 100% |
 | 持久化随机池 | sidecar/src/pool.js | 5 | 100% |
 | 参考图扫描与抽取 | sidecar/src/scanner.test.js | 7 | 100% |
-| Rust 调度/迁移/命令 | src-tauri/Cargo | 42 | 100% |
-| **总计** | - | **96** | **100%** |
+| Rust 调度/迁移/命令 | src-tauri/Cargo | 40 | 100% |
+| **总计** | - | **94** | **100%** |
 
 ## 文档完整性检查
 

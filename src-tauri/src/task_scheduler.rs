@@ -16,7 +16,6 @@
 
 use chrono::Utc;
 use rusqlite::Connection;
-use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,76 +26,6 @@ use tokio::time::{sleep, Duration};
 
 use crate::db::get_connection;
 use crate::models::Task;
-
-/** 任务状态 */
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub enum TaskStatus {
-    Pending,
-    Preparing,
-    SelectingImages,
-    WaitingConfirmation,
-    Uploading,
-    Submitting,
-    Generating,
-    Downloading,
-    Verifying,
-    Completed,
-    Paused,
-    Failed,
-    Cancelled,
-    NeedsManualIntervention,
-}
-
-impl std::fmt::Display for TaskStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TaskStatus::Pending => write!(f, "pending"),
-            TaskStatus::Preparing => write!(f, "preparing"),
-            TaskStatus::SelectingImages => write!(f, "selecting_images"),
-            TaskStatus::WaitingConfirmation => write!(f, "waiting_confirmation"),
-            TaskStatus::Uploading => write!(f, "uploading"),
-            TaskStatus::Submitting => write!(f, "submitting"),
-            TaskStatus::Generating => write!(f, "generating"),
-            TaskStatus::Downloading => write!(f, "downloading"),
-            TaskStatus::Verifying => write!(f, "verifying"),
-            TaskStatus::Completed => write!(f, "completed"),
-            TaskStatus::Paused => write!(f, "paused"),
-            TaskStatus::Failed => write!(f, "failed"),
-            TaskStatus::Cancelled => write!(f, "cancelled"),
-            TaskStatus::NeedsManualIntervention => write!(f, "needs_manual_intervention"),
-        }
-    }
-}
-
-/** 错误分类 */
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub enum ErrorClass {
-    TempNetwork,
-    DownloadInterrupted,
-    LoginExpired,
-    Captcha,
-    AccountLimit,
-    PageStructureChanged,
-    SubmissionUnclear,
-    FileCheckFailed,
-    Other,
-}
-
-impl std::fmt::Display for ErrorClass {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ErrorClass::TempNetwork => write!(f, "temp_network"),
-            ErrorClass::DownloadInterrupted => write!(f, "download_interrupted"),
-            ErrorClass::LoginExpired => write!(f, "login_expired"),
-            ErrorClass::Captcha => write!(f, "captcha"),
-            ErrorClass::AccountLimit => write!(f, "account_limit"),
-            ErrorClass::PageStructureChanged => write!(f, "page_structure_changed"),
-            ErrorClass::SubmissionUnclear => write!(f, "submission_unclear"),
-            ErrorClass::FileCheckFailed => write!(f, "file_check_failed"),
-            ErrorClass::Other => write!(f, "other"),
-        }
-    }
-}
 
 /** 任务控制指令（暂停/取消） */
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -307,15 +236,6 @@ impl Scheduler {
         let stdin = guard.as_mut().ok_or("sidecar 未启动")?;
         writeln!(stdin, "{}", serde_json::to_string(&cmd).unwrap()).map_err(|e| e.to_string())?;
         stdin.flush().map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
-    /** 停止 sidecar 进程 */
-    pub fn stop_sidecar(&self) -> Result<(), String> {
-        let mut guard = self.sidecar_stdin.lock().map_err(|e| e.to_string())?;
-        if let Some(stdin) = guard.take() {
-            drop(stdin); // 关闭 stdin，sidecar 会退出
-        }
         Ok(())
     }
 
@@ -2482,18 +2402,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_task_status_display() {
-        assert_eq!(TaskStatus::Pending.to_string(), "pending");
-        assert_eq!(TaskStatus::Preparing.to_string(), "preparing");
-        assert_eq!(TaskStatus::Generating.to_string(), "generating");
-        assert_eq!(TaskStatus::Downloading.to_string(), "downloading");
-        assert_eq!(TaskStatus::Completed.to_string(), "completed");
-        assert_eq!(TaskStatus::Failed.to_string(), "failed");
-        assert_eq!(TaskStatus::Cancelled.to_string(), "cancelled");
-        assert_eq!(TaskStatus::Paused.to_string(), "paused");
-    }
-
-    #[test]
     fn test_scheduler_new() {
         let scheduler = Scheduler::new();
         assert!(!scheduler.is_running());
@@ -2501,14 +2409,6 @@ mod tests {
         assert!(!scheduler.try_acquire(2));
         scheduler.release();
         assert!(scheduler.try_acquire(2));
-    }
-
-    #[test]
-    fn test_error_class_display() {
-        assert_eq!(ErrorClass::TempNetwork.to_string(), "temp_network");
-        assert_eq!(ErrorClass::LoginExpired.to_string(), "login_expired");
-        assert_eq!(ErrorClass::Captcha.to_string(), "captcha");
-        assert_eq!(ErrorClass::Other.to_string(), "other");
     }
 
     #[test]

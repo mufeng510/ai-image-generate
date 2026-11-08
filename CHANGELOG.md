@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 清理
+
+- 移除死代码与未使用项（构建现 0 warning）：`TaskStatus` / `ErrorClass` 枚举（仅被测试使用，实际状态机用字符串）及其 Display 测试、`Scheduler::stop_sidecar`、`sha256_hex`（仅测试用，标记 `#[cfg(test)]`）、前端从未调用的原型 IPC 命令 `task_create_round` / `task_add_image` / `task_update_round` 及其注册与 payload 结构
+- 验证：`cargo build --offline` 0 warning；`cargo test` 40 项全过（原 42，减 2 个被删测试）；`npx tsc --noEmit` 通过；`scripts/run-tests.ps1` 离线全绿
+
 ### 修复
 
 - 修复「继续执行」从不点击发送的缺陷：resume 路径的已生成图片探测误将参考图附件缩略图计入，直接跳过提交并提取失败；现只统计 `rc_gen_image` 生成产物
