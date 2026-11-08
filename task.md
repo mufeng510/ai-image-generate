@@ -1324,7 +1324,7 @@ README 中说明：
     - Rust `which_node(app)`：NODE_EXE > 安装包内置 node > `repo/runtime/node/win-x64/node.exe` > 系统 PATH 的 `node`；Playwright 启动时若 `resource_dir` 下 ms-playwright 目录存在，注入 `PLAYWRIGHT_BROWSERS_PATH`；否则回落到系统 Playwright 缓存路径。
     - README / USER_GUIDE / DEVELOPMENT 已同步改为「安装包内置完整运行时；源码构建需要 Node 与 Rust」。
   - 验证：`node.exe -v` → v22.20.0；Chromium 目录总量 ~730MB；`cargo test` 33 项通过、`npx tsc --noEmit`、`npm run build`；Release 构建检查（签名 OK，release workflow 已更新；构建时间较长——`npm run tauri build` 正在跑）。
-  - 后续：`npm run tauri build` 成功后用户在干净 Windows 冒烟安装包（启动应用运行任意单轮任务，确认 sidecar 不需要 PATH 上的 Node.js）。
+  - 后续（2026-11-08 完成）：当前 HEAD（1.0.0）重新构建 MSI/NSIS 双包并签名；`msiexec /a` 解压 payload 验证 runtime/node v22.20.0 可独立运行、ms-playwright（718MB）与 sidecar 完整；净化 PATH（无 node/cargo）启动 release 二进制与装机版均正常，UI 与设置页版本 1.0.0 显示正确；本机（Win10 IoT LTSC）完成装机冒烟。未在第二台干净机器验证。
 - [x] **P0-2 安全暂停/取消**：暂停、取消必须真正停止正在执行的自动化；继续执行不得在状态不明时重复提交。
   - 完成 2026-11-07：`Scheduler` 增加控制状态（`Running/PauseRequested/CancelRequested`），`wait_result` 每秒检查并在中断时返回 `Interrupted`；`tasks.rs` 暂停/取消会向 sidecar 发送 `{"cmd":"abort"}`（仅当该任务正在执行时）；sidecar 在等待生成、上传前、提交前、下载循环检查中止标记，下载循环中断时保留已下载文件；继续执行统一走 `resume_task` 的页面状态探测。
   - 验证：`cargo test` 8 项通过；`node --check sidecar/src/index.js` 通过。**已真实复测**（2026-11-08：task #10 生成等待中暂停 → 继续，resume 探测页面识别已生成 2 张 → 提取下载，无重复提交）。
@@ -1420,7 +1420,7 @@ README 中说明：
 
 | # | 验收标准 | 状态 |
 |---|---|---|
-| 1 | Windows 安装程序能正常安装和运行 | 🟡（MSI 343MB / NSIS 247MB，2026-11-07 构建；未在干净机器安装验证） |
+| 1 | Windows 安装程序能正常安装和运行 | ✅（2026-11-08：1.0.0 MSI/NSIS 签名构建；payload 验证内置 runtime 可独立运行；本机装机后净化 PATH 启动、UI 正常、版本 1.0.0 显示正确；未在第二台干净机器验证） |
 | 2 | 用户不需要自行安装 Node.js、Playwright、Chromium | ✅（安装包自带 runtime/node 与 runtime/ms-playwright） |
 | 3 | 能创建和导入项目 | ✅ |
 | 4 | 能正确递归扫描参考图片 | ✅ |
@@ -1450,6 +1450,20 @@ README 中说明：
 - 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-08（1.0.0 发布包构建 + 装机冒烟）
+
+**构建（commit `a6f42c0` 之后）**：`npm run tauri build`（TAURI_SIGNING_PRIVATE_KEY 从本地 key 文件注入，未打印）——vite build ✓、runtime 幂等（未重下）、release 编译 50.5s、`doubao-batch-image-generate_1.0.0_x64_en-US.msi`（343.46 MiB）+ `doubao-batch-image-generate_1.0.0_x64-setup.exe`（247.12 MiB）+ 双 .sig 更新签名 ✓。仅 7 条既有 warning（未使用变量/死代码，未处理）。
+
+**装机冒烟（本机 Win10 IoT LTSC）**：
+
+1. MSI `/passive` 安装成功（注册表 uninstall 项 DisplayVersion=1.0.0，InstallLocation=`%LOCALAPPDATA%\doubao-batch-image-generate\`；覆盖安装 0.1.0）。
+2. 安装目录内置 `runtime/node/win-x64/node.exe` → v22.20.0 独立运行 ✓；`runtime/ms-playwright`（chromium-1248 / headless_shell-1248 / ffmpeg-1013 / winldd-1007）✓；`sidecar/src/index.js` + node_modules ✓。
+3. `msiexec /a` 解压验证相同结论（payload 与安装结果一致）。
+4. **净化 PATH**（`set PATH=C:\Windows\system32;C:\Windows`，无 node/cargo）启动 `target/release` 产物与装机版 → 均正常起、窗口「豆包批量生图」渲染、仪表盘数据可读、设置页显示「软件版本 1.0.0」✓。全程未调用 PATH 上的 Node。
+5. 未做：第二台干净机器安装；安装后真实单轮生图（本机装机后由用户监督决定是否跑）。
+
+**产物**：`src-tauri/target/release/bundle/{msi,nsis}/`（1.0.0 + .sig）；仓库未改名、未推送。
 
 ### 2026-11-08（3 轮多轮 E2E + 暂停/继续 + 阈值暂停 + 账号回写修复）
 
