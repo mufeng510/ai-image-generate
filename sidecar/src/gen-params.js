@@ -121,5 +121,6 @@ module.exports = {
   GEN_MODEL_VALUES,
   GEN_RATIO_VALUES,
   GEN_STYLE_VALUES,
+  ensureImageMode,
   applyGenParams,
 };

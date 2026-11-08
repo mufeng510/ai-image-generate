@@ -96,14 +96,15 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
     let unlistenComplete: (() => void) | null = null
     let unlistenLog: (() => void) | null = null
     ;(async () => {
-      unlistenStatus = await listen<{ task_id: number; status: string }>(
+      unlistenStatus = await listen<{ task_id: number; status: string; reason?: string }>(
         'task-status-changed',
         (event) => {
-          const { task_id, status } = event.payload
+          const { task_id, status, reason } = event.payload
           setTasks((prev) =>
             prev.map((t) => (t.id === task_id ? { ...t, status } : t))
           )
-          addLog(t('logs.taskStatusChanged', { id: task_id, status }))
+          const base = t('logs.taskStatusChanged', { id: task_id, status })
+          addLog(reason ? `${base}（${reason}）` : base)
         }
       )
 

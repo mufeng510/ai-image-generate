@@ -130,11 +130,13 @@ export default function NotificationCenter({ onOpenTask }: Props) {
       listen('task-status-changed', (e) => {
         const payload = p(e)
         const status = payload.status
+        const reason = (payload.reason as string | undefined) ?? ''
+        const withReason = (msg: string) => (reason ? `${msg}。原因：${reason}` : msg)
         if (status === 'failed') {
           notify({
             kind: 'task_failed',
             title: t('notify.taskFailed'),
-            message: t('notify.taskFailedMessage', { id: payload.task_id }),
+            message: withReason(t('notify.taskFailedMessage', { id: payload.task_id })),
             level: 'error',
             task_id: payload.task_id,
           })
@@ -142,7 +144,7 @@ export default function NotificationCenter({ onOpenTask }: Props) {
           notify({
             kind: 'needs_manual_intervention',
             title: t('notify.needsIntervention'),
-            message: t('notify.needsInterventionMessage', { id: payload.task_id }),
+            message: withReason(t('notify.needsInterventionMessage', { id: payload.task_id })),
             level: 'warn',
             task_id: payload.task_id,
           })

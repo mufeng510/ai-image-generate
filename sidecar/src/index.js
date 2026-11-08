@@ -518,9 +518,9 @@ async function findSubmitButton(page) {
   return null;
 }
 
-/** 统计页面上生成图片数量 */
+/** 统计页面上已生成图片数量（只统计 rc_gen_image 生成产物，避免把参考图缩略图算成生成图） */
 async function countGeneratedImages(page) {
-  return await page.locator('img[src*="tos-cn-i-a9rns2rl98"]').count().catch(() => 0);
+  return await page.locator('img[src*="rc_gen_image"]').count().catch(() => 0);
 }
 
 /** 等待生成图片出现且数量稳定；返回最终数量（0 = 超时未出现）；任务被中止时抛出 AbortError */
@@ -531,7 +531,7 @@ async function waitForGeneration(page, timeoutMs, taskId) {
   log('info', `等待生图完成（最长 ${Math.round(timeoutMs / 1000)} 秒）…`);
   while (Date.now() < deadline) {
     throwIfAborted(taskId);
-    const count = await page.locator('img[src*="tos-cn-i-a9rns2rl98"]').count().catch(() => 0);
+    const count = await page.locator('img[src*="rc_gen_image"]').count().catch(() => 0);
     if (count > 0 && count === lastCount) {
       stablePolls += 1;
       if (stablePolls >= 2) break;
@@ -573,6 +573,13 @@ async function resumeGenerate(cmd) {
   }
 
   await dismissPageOverlays(page);
+
+  // 与主流程保持一致：恢复时也保证处于「图像生成」模式（对话模式没有文件上传入口）
+  try {
+    await genParams.ensureImageMode(page, (level, msg) => log(level, msg));
+  } catch (err) {
+    log('warn', `切换图像生成模式失败: ${err && err.message ? err.message : String(err)}`);
+  }
 
   const url = page.url();
   const existing = await countGeneratedImages(page);
@@ -724,7 +731,14 @@ async function generateImagesInner(cmd) {
   await page.waitForTimeout(3000);
   await dismissPageOverlays(page);
 
-  // 进入页面后应用图像生成参数（确保处在图像生成模式 + 设置模型/比例/风格）
+  // 生图流程必须处于「图像生成」模式，否则页面没有文件上传入口（切换到图像生成 tab）
+  try {
+    await genParams.ensureImageMode(page, (level, msg) => log(level, msg));
+  } catch (err) {
+    log('warn', `切换图像生成模式失败: ${err && err.message ? err.message : String(err)}`);
+  }
+
+  // 进入页面后应用图像生成参数（设置模型/比例/风格）
   if (cmd.apply_gen_params && cmd.gen_params) {
     try {
       await genParams.applyGenParams(page, cmd.gen_params, (level, msg) => log(level, msg));
@@ -830,7 +844,7 @@ async function generateImagesInner(cmd) {
     }
   }
 
-  // 6. 等待生成完成：img[src*=tos-cn-i-a9rns2rl98] 出现且数量稳定
+  // 6. 等待生成完成：img[src*=rc_gen_image] 出现且数量稳定
   const genTimeoutMs = cmd.generation_timeout_ms || 180000;
   const lastCount = await waitForGeneration(page, genTimeoutMs, cmd.task_id);
   if (lastCount <= 0) {

@@ -155,6 +155,29 @@
 5. 前端空白：App 未包 I18nProvider → 修复
 6. taskStart 参数类型错误（对象传给 number），任务页无创建入口 → 修复并删除死代码 Tasks.tsx
 
+### 2026-11-08 实测通过（1 轮，用户监督，人工确认 + 继续执行全链路）：
+
+| 测试项 | 预期结果 | 状态 |
+|---|---|---|
+| 创建任务 | 任务队列显示待处理，名称自动生成 | ✅ 通过 |
+| 图片抽取 | 按文件夹独立抽取 5 张（仅 references/，不含 output/） | ✅ 通过（13 张/2 文件夹） |
+| 切换图像生成模式 | 进入图像生成 tab | ✅ 通过 |
+| 上传参考图 | 5 张全部上传成功 | ✅ 通过 |
+| 填写提示词 | prompt.txt 内容填入对话框 | ✅ 通过 |
+| 提交前暂停 | waiting_confirmation，等待人工确认 | ✅ 通过 |
+| 继续执行 | 点击发送按钮 ×1，不重复提交 | ✅ 通过（修复后；修复前“提交了个寂寞”） |
+| 生图完成识别 | 页面出现生成图后稳定检测 | ✅ 通过（2 张图片） |
+| 原始图片提取 | DOM/流式提取 rc_gen_image | ✅ 通过（001.png / 002.png） |
+| 图片下载 | 按实际格式保存 | ✅ 通过（001.png 135,631 B；002.png 2,122,835 B） |
+| 图片校验 | SHA-256 与 DB 记录一致 | ✅ 通过（task_images.download_status='verified'） |
+
+**2026-11-08 真实 E2E 发现并修复的问题：**
+1. resume 路径 `countGeneratedImages` 把参考图附件也数成“已生成图片”，导致「继续执行」从不点击发送、直接提取失败（no_generated_images）→ 只统计 `img[src*=rc_gen_image]`
+2. sidecar scanner 扫描项目 root（含 `output/` 产物目录），历史生图结果被当参考图 → `pick_scan_root`：存在 references/ 只扫它（2 项单元测试）
+3. Windows verbatim 路径（`\\?\C:\...`）直接传给 Node，`lstat 'C:'` EISDIR → spawn 前剥离 `\\?\` 前缀（`canonicalize_path`）；额外写 `DoubaoBatchImage/sidecar-spawn.log`（resolved 路径+cwd）
+4. dev 资源优先级使用陈旧 packaged 副本 → dev 树优先，打包副本兜底
+5. 人工干预 UX 无提示 → `task-status-changed` 事件携带 `reason`；任务行日志与通知中心显示“原因：...”
+
 **注意：** 开发期间编辑 src-tauri 会触发 tauri dev 自动重启并杀死正在运行的任务——任务运行中不要改 Rust 代码。
 
 ### 手动测试步骤

@@ -124,6 +124,22 @@ pub struct Scheduler {
     running: Mutex<bool>,
 }
 
+/** 规范化并剥离 Windows `\\?\` 前缀；Node 无法正确处理 verbatim 路径（会把 `C:` 误当目录） */
+fn canonicalize_path(p: std::path::PathBuf) -> std::path::PathBuf {
+    let canonical = std::fs::canonicalize(&p).unwrap_or(p);
+    let text = canonical.to_string_lossy().to_string();
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return std::path::PathBuf::from(format!(r"\\{}", rest));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return std::path::PathBuf::from(rest);
+        }
+    }
+    canonical
+}
+
 impl Scheduler {
     pub fn new() -> Self {
         Scheduler {
@@ -139,7 +155,19 @@ impl Scheduler {
 
     /** 启动 Sidecar 进程（Node.js + Playwright Chromium） */
     pub async fn start_sidecar(&self, app: &AppHandle) -> Result<(), String> {
-        let index_js = resolve_sidecar_index(app)?;
+        let index_js = canonicalize_path(resolve_sidecar_index(app)?);
+        if let Ok(dir) = crate::task_scheduler::app_data_dir() {
+            let _ = std::fs::write(
+                dir.join("sidecar-spawn.log"),
+                format!(
+                    "node={:?}\nentry={:?}\nbrowsers={:?}\ncwd={:?}\n",
+                    which_node(app).ok().map(canonicalize_path),
+                    &index_js,
+                    playwright_browsers_path(app).map(canonicalize_path),
+                    std::env::current_dir().ok(),
+                ),
+            );
+        }
 
         let mut child = {
             let mut stdin_guard = self.sidecar_stdin.lock().map_err(|e| e.to_string())?;
@@ -147,7 +175,7 @@ impl Scheduler {
                 return Ok(()); // 已启动
             }
 
-            let node_exe = which_node(app)?;
+            let node_exe = canonicalize_path(which_node(app)?);
             let mut cmd = Command::new(&node_exe);
             cmd.arg(&index_js)
                 .stdin(Stdio::piped())
@@ -156,7 +184,7 @@ impl Scheduler {
             // 内置 Chromium（resources/runtime/ms-playwright）存在时注入路径，
             // 否则回落到系统 Playwright 缓存目录（%LOCALAPPDATA%\\ms-playwright）。
             if let Some(browsers) = playwright_browsers_path(app) {
-                cmd.env("PLAYWRIGHT_BROWSERS_PATH", &browsers);
+                cmd.env("PLAYWRIGHT_BROWSERS_PATH", canonicalize_path(browsers));
             }
             let mut child = cmd
                 .spawn()
@@ -443,6 +471,17 @@ fn resolve_sidecar_index(app: &AppHandle) -> Result<std::path::PathBuf, String> 
         tried.push(format!("SIDECAR_INDEX={}（该路径不存在）", p));
     }
 
+    // 开发树优先（本机调试代码必须即时生效，现成 packaged 副本只用于打包产物做对照）
+    let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("sidecar")
+        .join("src")
+        .join("index.js");
+    if dev_path.exists() {
+        return Ok(dev_path);
+    }
+    tried.push(dev_path.display().to_string());
+
     // 打包环境：安装目录下的 bundle 资源
     if let Ok(resource_dir) = app.path().resource_dir() {
         let packaged = resource_dir
@@ -458,14 +497,6 @@ fn resolve_sidecar_index(app: &AppHandle) -> Result<std::path::PathBuf, String> 
     }
 
     // 开发树：src-tauri/../sidecar/src/index.js
-    let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("sidecar")
-        .join("src")
-        .join("index.js");
-    if dev_path.exists() {
-        return Ok(dev_path);
-    }
     tried.push(dev_path.display().to_string());
 
     // 旧部署约定（本地数据目录）
@@ -922,6 +953,7 @@ fn set_task_status(app: &AppHandle, tid: i64, status: &str, msg: &str) {
     let _ = app.emit("task-status-changed", serde_json::json!({
         "task_id": tid,
         "status": status,
+        "reason": msg,
     }));
 }
 
@@ -1125,6 +1157,20 @@ fn allocate_round_dir(output_root: &std::path::Path) -> std::path::PathBuf {
         n += 1;
     }
     candidate
+}
+
+/**
+ * 选择本轮扫描根目录：项目内若存在 references/ 子目录，只从该目录抽取（用户的参考图约定）；
+ * 否则回落到项目根目录（兼容旧的平铺目录布局）。
+ * 绝不能让 output/ 等产物目录混入参考图池。
+ */
+fn pick_scan_root(project_root: &std::path::Path) -> std::path::PathBuf {
+    let refs = project_root.join("references");
+    if refs.is_dir() {
+        refs
+    } else {
+        project_root.to_path_buf()
+    }
 }
 
 /** 处理一次下载结果：与 pending 按顺序一一对应（sidecar 按请求顺序返回）。
@@ -1445,11 +1491,12 @@ async fn run_single_round(
         }
         eprintln!("[调度器] 发送 scan_images 命令…");
         let scan_request_id = new_request_id();
+        let scan_root = pick_scan_root(project_root);
         let scan_cmd = serde_json::json!({
             "cmd": "scan_images",
             "task_id": tid,
             "request_id": scan_request_id,
-            "root_path": project_root.to_string_lossy(),
+            "root_path": scan_root.to_string_lossy(),
             "round_number": round_number,
             "state_dir": state_dir.to_string_lossy(),
             "units_file": units_file.to_string_lossy(),
@@ -2636,6 +2683,25 @@ mod tests {
         let second = allocate_round_dir(&root);
         assert_ne!(first, second, "已存在目录时不得复用");
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_pick_scan_root_prefers_references_dir() {
+        let root = std::env::temp_dir().join(format!("scan_root_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("references")).unwrap();
+        std::fs::create_dir_all(root.join("output")).unwrap();
+        assert_eq!(pick_scan_root(&root), root.join("references"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_pick_scan_root_falls_back_to_project_root() {
+        let root = std::env::temp_dir().join(format!("scan_root_test_bare_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("output")).unwrap();
+        assert_eq!(pick_scan_root(&root), root);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
