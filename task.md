@@ -1311,7 +1311,7 @@ README 中说明：
 - [x] **基础界面**：仪表盘、项目、账号、任务队列、任务详情、日志、设置七个页面（`src/pages/`）。
 - [x] **安装包与更新配置**：NSIS 安装包可生成；updater 公钥、GitHub Release 端点、发布工作流已配置（`src-tauri/tauri.conf.json`、`.github/workflows/release.yml`）。
 - [x] **项目文档**：README / README_EN / ARCHITECTURE / TECHNICAL_VALIDATION / DEVELOPMENT / TESTING / USER_GUIDE / CHANGELOG 八份齐全。
-- [x] **现有单元测试**：提取器 15、下载器 18、Sidecar 下载器 9、随机池 5、Rust 5，共 52 个，全部通过。
+- [x] **现有单元测试**：提取器 15、下载器 18、Sidecar 下载器 9、随机池 5、扫描器 7、Rust 42，共 96 项，全部通过（2026-11-08 更新）。
 
 ## 23.2 未完成
 
@@ -1327,7 +1327,7 @@ README 中说明：
   - 后续：`npm run tauri build` 成功后用户在干净 Windows 冒烟安装包（启动应用运行任意单轮任务，确认 sidecar 不需要 PATH 上的 Node.js）。
 - [x] **P0-2 安全暂停/取消**：暂停、取消必须真正停止正在执行的自动化；继续执行不得在状态不明时重复提交。
   - 完成 2026-11-07：`Scheduler` 增加控制状态（`Running/PauseRequested/CancelRequested`），`wait_result` 每秒检查并在中断时返回 `Interrupted`；`tasks.rs` 暂停/取消会向 sidecar 发送 `{"cmd":"abort"}`（仅当该任务正在执行时）；sidecar 在等待生成、上传前、提交前、下载循环检查中止标记，下载循环中断时保留已下载文件；继续执行统一走 `resume_task` 的页面状态探测。
-  - 验证：`cargo test` 8 项通过；`node --check sidecar/src/index.js` 通过。**待真实浏览器复测**（暂停后不再提交、取消保留文件）。
+  - 验证：`cargo test` 8 项通过；`node --check sidecar/src/index.js` 通过。**已真实复测**（2026-11-08：task #10 生成等待中暂停 → 继续，resume 探测页面识别已生成 2 张 → 提取下载，无重复提交）。
 - [x] **P0-3 启动恢复**：软件启动后不得自动执行上次未完成任务；应展示未完成任务、上次状态，并由用户手动恢复。
   - 完成 2026-11-07：新增 `recover_interrupted_tasks()`（`main.rs` 启动时调用），把上次执行中的任务标记为 `needs_manual_intervention` 并写入 `interrupted_status`，未完成轮次标记为 `paused`；调度器增加 `auto_run` 闸门，启动后为 `false`，只有用户点击「开始/继续」才启用；任务列表显示「上次：生成中」等原状态。
   - 验证：`cargo test` 8 项通过；`npm run build` 通过。**待重启实测**（不会自动跑、原状态可见）。
@@ -1346,13 +1346,13 @@ README 中说明：
     - `confirm_selection`：复用轮次记录中的参考图与提示词快照继续生成；
     - `confirm_before_submit`：sidecar 在「已上传+已填提示词」处暂停，继续时携带 `submit_pending=true` 只点击一次发送。
   - 说明：豆包页面上「上传后」与「提交前」是同一时刻（上传与输入提示词后才有发送按钮），因此合并为一个确认点，避免制造虚假的第三个节点。
-  - 验证：`cargo test` 11 项通过；`node --check sidecar/src/index.js` 通过；`npm run build` 通过。**待真实浏览器复测**。
+  - 验证：`cargo test` 11 项通过；`node --check sidecar/src/index.js` 通过；`npm run build` 通过。**已真实复测**（2026-11-08：task #9 提交前确认 → 继续执行 → 只点击发送 ×1 → 成功；task #12 复验 2/2 verified）。
 - [x] **P0-6 多轮生图**：任务可设置轮数并按轮执行。
   - 完成 2026-11-07：`tasks.total_rounds` 在创建任务时写入（界面「轮数」输入，1–999）；`run_rounds_loop` 逐轮执行，每轮重新抽图并重新读取 `prompt.txt`，全部轮次成功才标记 `completed`；中断后可从「两轮之间」直接继续后续轮次，不重复提取已完成的轮次。
-  - 验证：`cargo test` 11 项通过；`npm run build` 通过。**待真实浏览器复测**（设置 3 轮产生 3 个轮次与 3 个输出目录）。
+  - 验证：`cargo test` 11 项通过；`npm run build` 通过。**已真实复测**（2026-11-08 task #10：3 轮全部 completed，current_round=3/3，累计下载 6 张，6/6 `verified`）。
 - [x] **P0-7 输出规范**：轮次目录 `yyyyMMdd_HHmmss_fff`（冲突递增后缀）、图片 `001.png`、每轮写入 `prompt.txt` / `references.json` / `task.json`。
   - 完成 2026-11-07：`allocate_round_dir` 生成目录并处理同名冲突；目录写入数据库 `task_rounds.output_dir`；sidecar 下载文件名为 `001.png` 起步（按魔数保留真实扩展名，如 `001.jpg`）；`prompt.txt`、`references.json`（路径/SHA-256/文件夹/抽取时间）、`task.json`（任务信息/下载结果/大小/SHA-256）每轮写入。
-  - 验证：`cargo test` 含目录命名与冲突单元测试，11 项通过。**待真实运行核对文件内容**。
+  - 验证：`cargo test` 含目录命名与冲突单元测试，11 项通过。**部分真实核对**（2026-11-08 task #10：3 个轮次目录产出、6/6 图片 `verified`；`task.json`/`references.json` 内容未单独抽查）。
 
 ### P1 — 功能完整性
 
@@ -1397,7 +1397,7 @@ README 中说明：
     - 设置补齐（经与 task.md 第十二节对照）：默认执行模式（`execution_mode` auto=连续执行 | step=每轮暂停，后端 `run_rounds_loop` 接线：step 模式每轮完成后写 `needs_manual_intervention`，用户点「继续执行」从下一轮开始）；`notify_enabled` 通知开关（已接线 + 系统权限请求）；每轮生图数量固定 5（向用户展示为固定项）；软件版本（`getVersion()` 来自 `@tauri-apps/api/app`，当前 0.1.0）；检查更新已有实现保留；语言持久化；「不提供代理配置」（按规范不提供）。
     - 后端文案（`set_task_status` 日志）保持中文，本次不做本地化（明确范围之外）。
   - 浏览器相关设置：未添加任何未经验证的浏览器选项（仅保留现有已验证的可见浏览器模式），避免破坏现有流程。
-  - 全局默认生图参数：依赖 P0-4 的真实网页参数验证，本次不实现。
+  - 全局默认生图参数：已在 P0-4 实现（设置页全局 model/ratio/style 下拉 + 项目覆盖 + 继承，2026-11-07，见 P0-4）。
   - 验证：`cargo test` 33 项通过、`npx tsc --noEmit`、`npm run build`；GUI 实测中文与 English 两种语言的全部页面（仪表盘/项目/账号/任务队列/日志/设置），未发现 raw-key 泄漏；zh-CN 默认回退正常。
 - [x] **P1-6 数据库与诊断**：数据库迁移版本机制、关键状态更新事务、Playwright Trace、失败时保存 URL/截图/脱敏日志。
   - 完成 2026-11-07；
@@ -1413,28 +1413,29 @@ README 中说明：
   - Rust Cargo：33 项（schema 3、commands 7、task_scheduler 23，含账号阈值/picks/absorb_download_results/control state/输出命名/round-robin 阈值）。
   - 文档 `docs/TESTING.md` 已更新（测试数、一键脚本、未覆盖项说明：真实 Doubao 浏览器 E2E 仍待具备账号环境后的用户监督复测）。
   - 2026-11-08 真实账号单轮全链路 E2E（用户监督）：任务 #9 完整走通 创建→扫描（`references/`）→抽 5 张→切换图像生成模式→上传→填写提示词→提交前确认暂停→用户点「继续执行」→发送→等待生成→提取 2 张→下载校验→completed。产物在 `output/20261108_134142_075/001.png|002.png`（SHA-256 与 `task_images.download_status='verified'` 均已入库）。
-  - 仍待：多轮（≥3 轮）真实连续任务；暂停（真实账号未复测，取消与继续执行已测）；`wait_result` 计时路径缺少确定性测试。
+  - 2026-11-08 补测（用户监督）：3 轮多轮 E2E + 生成等待中暂停/继续（task #10：3 轮 completed，6/6 verified，resume 探测无重复提交）；账号阈值暂停（task #11：needs_manual_intervention + notice）；修复后复验（task #12：2/2 verified，账号 `logged_in` / submit_count 0→1 / success_count 5→6，修复 `1edc0f6`）。
+  - 仍待：真实生图过程中的取消（目前仅阈值暂停后取消已测）；软件关闭恢复完整实测；`wait_result` 计时路径缺少确定性测试。
 
 ## 23.3 最终验收对照
 
 | # | 验收标准 | 状态 |
 |---|---|---|
-| 1 | Windows 安装程序能正常安装和运行 | 🟡（MSI/NSIS 已生成，未在干净机器安装验证） |
+| 1 | Windows 安装程序能正常安装和运行 | 🟡（MSI 343MB / NSIS 247MB，2026-11-07 构建；未在干净机器安装验证） |
 | 2 | 用户不需要自行安装 Node.js、Playwright、Chromium | ✅（安装包自带 runtime/node 与 runtime/ms-playwright） |
 | 3 | 能创建和导入项目 | ✅ |
 | 4 | 能正确递归扫描参考图片 | ✅ |
 | 5 | 能按文件夹独立抽取规则选择 5 张图片 | ✅ |
 | 6 | 能保存每轮抽图记录 | ✅（`references.json` + 数据库） |
-| 7 | 能管理多个豆包账号的独立登录状态 | 🟡（多账号轮换/阈值已代码验证，未完成真实登录/阈值端到端复测） |
+| 7 | 能管理多个豆包账号的独立登录状态 | 🟡（doubao-main 阈值暂停与 logged_in/计数回写已实测（#10/#11/#12）；多账号轮换、第二账号独立登录未实测） |
 | 8 | 能正常操作豆包网页完成生图 | ✅（2026-11-08 单轮全链路复测：确认节点 → 继续执行 → 生成 → 提取 → 下载） |
 | 9 | 能识别一轮生成的全部图片 | ✅ |
 | 10 | 能可靠保存可正常访问的原始图片资源 | ✅ |
 | 11 | 能校验下载文件完整性 | ✅ |
-| 12 | 能执行多轮任务 | 🟡（单轮已复测通过；多轮真实连续任务未实测） |
+| 12 | 能执行多轮任务 | ✅（2026-11-08 task #10：3 轮全部完成，current_round=3/3，累计 6 张全部 `verified`） |
 | 13 | 能管理多个项目的任务队列 | 🟡（功能齐备，未在多项目同队列压测） |
-| 14 | 能暂停、继续、取消任务 | 🟡（2026-11-08：继续执行与取消已实测，暂停未在真实账号复测） |
+| 14 | 能暂停、继续、取消任务 | 🟡（暂停+继续已真实通过（#10，生成等待中暂停后 resume 无重复提交）；取消仅阈值暂停后取消已测（#11），真实生图中取消未系统验证） |
 | 15 | 软件关闭后能安全恢复未完成任务 | 🟡（已实现并离线代码验证，未在真实重启后端到端验证） |
-| 16 | 不会因为状态不明而重复提交 | 🟡（提交前检查中止标记 + 页面状态探测；未在状态不明超时场景实测） |
+| 16 | 不会因为状态不明而重复提交 | 🟡（生成等待中暂停→继续已实测无重复提交（#10）；超时/状态不明注入场景未实测） |
 | 17 | 能处理登录失效、验证码和网页结构变化 | 🟡（已实现登录失效/验证码/结构变化检测，未做真实故障注入） |
 | 18 | 能保留错误截图和诊断信息 | 🟡（已实现 URL/截图保存，未在真实失败场景复现验证） |
 | 19 | 能查看和导出完整执行日志 | 🟡（筛选/导出 UI 与命令已接线并通过 GUI 渲染验证，未实际写出 CSV 导出文件对账） |
@@ -1449,6 +1450,25 @@ README 中说明：
 - 生图参数（P0-4）必须先完成真实网页验证再实现，禁止臆造参数名与可选值。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-08（3 轮多轮 E2E + 暂停/继续 + 阈值暂停 + 账号回写修复）
+
+**背景**：在用户监督下，真实账号 doubao-main 完成多轮/暂停/阈值场景验证（HEAD 含 `0e281f4`）。
+
+**实测结果**：
+
+1. **3 轮多轮 E2E（task #10）**：轮 1 提交后于生成等待中「暂停」→ 任务 paused、不下载/不重复提交/不进入轮 2 ✅；「继续」→ resume 探测页面识别已生成 2 张 → 提取下载、无重复提交 ✅；轮 2、轮 3 自动完成；任务整体 completed，current_round=3/3，累计 6 张全部 `verified`，SHA-256 6/6 一致，图片内容人工抽查为真实产品图。
+2. **账号阈值暂停（task #11）**：`image_threshold` 临时设为 1 → 任务在第 1 轮开始前即暂停（needs_manual_intervention，不消耗额度，通知/日志正常）；测后阈值恢复 0，任务取消 ✅。
+3. **修复后复验（task #12）**：1 轮完成、2/2 verified、SHA-256 一致；账号实测回写（`submit_count` 0→1、`success_count` 5→6、`status='logged_in'`）✅。
+
+**实测发现并修复（commit `1edc0f6`）**：
+
+1. round 恢复完成后 `failure_reason` 残留中断原因 → 成功分支置 NULL，并回填清空已完成轮次中的陈旧值。
+2. 账号多轮成功后 `status` 仍为 `login_pending`、计数始终 0（auto 选号会跳过可用账号）→ 生成/提取成功即置 `logged_in` 并累加 `success_count`；`submit_count` 于成功提交点累加（含人工确认节点代点发送）；resume 页面探测路径不重复计数；历史数据回填。
+
+**已知设计观察（未改，待产品确认）**：本实例「开始」启用的 `Scheduler::auto_run` 闸门为进程级且一旦启用不关闭，后续新建的 pending 任务无需再点「开始」即被主循环自动拣取执行。
+
+**验证**：`cargo test` 42 项通过；`scripts/run-tests.ps1` 离线全绿；E2E 明细见 `docs/TESTING.md`。
 
 ### 2026-11-08（单轮全链路 E2E 实测 + 三项关键修复）
 
