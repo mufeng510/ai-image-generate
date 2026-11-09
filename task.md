@@ -1436,7 +1436,7 @@ README 中说明：
 | 14 | 能暂停、继续、取消任务 | ✅（暂停+继续：#10，生成等待中暂停后 resume 无重复提交；阈值暂停后取消：#11；**真实生图中取消：#14**（doubao-second，提交后生成等待中点「取消」20s 内干净中止、无重复提交、任务落 cancelled、日志记录）） |
 | 15 | 软件关闭后能安全恢复未完成任务 | ✅（2026-11-08 本机重启验证：重启后未完成任务不自动执行，#8 显示「需人工处理 上次： 提交前」，原状态可见；手动「继续执行」即恢复入口） |
 | 16 | 不会因为状态不明而重复提交 | ✅（2026-11-09 B6：生成等待中断网注入（task #17）——sidecar 180s 判 `generation_timeout`，任务落 `needs_manual_intervention`（本次将该分类从 `failed` 对齐为 `needs_manual_intervention`）、通知 kind=`needs_manual_intervention`；`submit_count` 不增加（未确认提交不计数）、全程无重复提交；恢复网络「继续执行」→ resume 探测 `chat/<id>` 已生成 → 提取→下载→校验→completed） |
-| 17 | 能处理登录失效、验证码和网页结构变化 | 🟡（已实现登录失效/验证码/结构变化检测，未做真实故障注入） |
+| 17 | 能处理登录失效、验证码和网页结构变化 | 🟡（登录失效：2026-11-09 B7 故障注入实测通过（task #18）。验证码：2026-11-09 B8——新增 `captcha_required` 检测（登录检查后风控文本识别 + 诊断快照 + `needs_manual_intervention`），离线 24 用例 + 真实对照任务 #19 通过，但真实验证码无法可靠触发，未做注入实测。网页结构变化：走 `submit_button_not_found`/`textbox_not_found`/`upload_input_not_found` 既有兜底（诊断快照 + 需人工处理），未真实注入） |
 | 18 | 能保留错误截图和诊断信息 | 🟡（已实现 URL/截图保存，未在真实失败场景复现验证） |
 | 19 | 能查看和导出完整执行日志 | 🟡（筛选/导出 UI 与命令已接线并通过 GUI 渲染验证，未实际写出 CSV 导出文件对账） |
 | 20 | 支持中文和英文 | ✅ |
@@ -1448,6 +1448,28 @@ README 中说明：
 - `docs/TECHNICAL_VALIDATION.md` 的 Phase 0 结论基于源码分析，登录后环节的实测记录见 `docs/TESTING.md`；两者应结合阅读。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-09（B8 验证码/网页结构变化故障注入）
+
+**背景（实现审计）：** 原声称「已实现验证码检测」名不副实——sidecar 无验证码检测器，风控页只能「恰好」命中 `prompt_click_failed`/`textbox_not_found` 等兜底分类暂停。本轮按用户确认补齐检测实现并对照现有结构变化通道。
+
+**实现变更：** ① 新增 `sidecar/src/detectors.js`（`isCaptchaText`，风控特征文本：`请完成…验证`/`拖动滑块`/`滑动拼图`/`人机验证`/`安全验证`/`人脸验证`/`访问频繁`/`操作频繁`/`captcha`，**刻意避开登录页「验证码登录」字样**）+ `detectors.test.js`（24 例，接入 `scripts/run-tests.ps1`）；② `sidecar/src/index.js` 登录检查后增加验证码检查：检测到 → `saveDiag('captcha_required')` → `reason=captcha_required` 返回（不上传后续提交、不点击）；③ `classify_gen_failure` 增加 `captcha_required → needs_manual_intervention`（通知「需要验证码/人机验证，请在可见浏览器中手动完成后继续」）+ Rust 单元测试（42/42 通过）。
+
+**验证：** ① 离线：detectors.test.js 24/24；Rust 42/42（target3，dev 实例占用 target/debug 改用 target3 测试，与 B6 一致）；② 真实对照：task #19（镊子 project 2，doubao-b7-test，1 轮，HEAD+未提交修改）正常完成、5/5 `verified`——新检测器**未误判**正常豆包页面 ✅；③ 真实验证码：**无法可靠触发**（用户确认无法操纵触发），按 todo 记录跳过原因——验收「暂停等待人工 + 通知 + 不自动绕过」的实现路径为：检测到 → 直接返回失败（无任何自动点击/提交动作）→ `saveDiag` 留存截图/HTML/JSON → `needs_manual_intervention` + kind=`needs_manual_intervention` 通知；路径中无绕过或代过风控的动作。
+
+**网页结构变化对照（未真实注入）：** 现状路径 = goto/上传/输入框/发送按钮任一环节找不到 → `saveDiag`（截图+HTML+JSON 落 `output/diagnostics/<tag>_<stamp>.*`）→ sidecar 返回对应 `reason` → `classify_gen_failure` 映射 `needs_manual_intervention`（除 `goto_failed`=`failed`）→ 任务行「需人工处理」+ 通知。未在真实页面构造结构变化（无法在不改豆包页面的前提下注入）；诊断产物将在 B9 的真实失败场景中复核。
+
+**观察：** ① overlays.js 通用遮罩关闭会对任何 role=dialog 弹窗尝试点「关闭」/Escape/点遮罩角——对风控弹窗无效（点击不等于解决，不构成「绕过」），但出现含 `关闭` 按钮的风控弹窗时可能先把它关掉（仍停在登录/上传链路失败处，安全兜底不变）；如需进一步收紧，可让 overlays 跳过含风控特征文本的弹窗——本轮未做，记录备查。② 验证码检查仅位于页面进入时的顶层关卡；若风控在上传/提交后出现，仍由 prompt/submit 相关失败兜底拦截（同样落 `needs_manual_intervention` + 诊断）。③ resume 路径未加验证码检测（resume 只做探测与恢复，风控页会探测失败并停在原状态，人工介入即可）。
+
+**验收：** #17 验证码部分=实现+离线验证 ✅（真实注入未做，记录跳过原因）；B8 todo 闭合。
+
+### 2026-11-09（B7 登录失效故障注入实测，task #18）
+
+**注入方式**（用户选择）：新建未登录临时账号 `doubao-b7-test`（id=3，全新空资料目录，不触碰 doubao-main/doubao-second 登录态），镊子 project 2、显式指定账号 #3、1 轮。dev 实例（HEAD `6a06b5f`）。
+
+**过程与结果：** 11:45:11 任务 #18 启动可见浏览器 → 抽图/上传流程推进 → 11:45:21 sidecar 登录检查命中 `login_required`（未上传后续步骤之外的提交，`submit_count` 保持 0）→ 任务落 `needs_manual_intervention`（round 1 `failed`，`failure_reason=login_required`）→ 通知中心 kind=`needs_manual_intervention`（id=33，含「登录失效，请在可见浏览器中手动登录后继续」）→ 日志无敏感信息 ✅。用户在可见 Chrome 中重新登录后点「继续执行」（11:57:03）→ resume 探测「全新对话且未提交」→ 全新执行（无重复提交）→ 11:57:57 完成：提取→下载→校验 4/4 `verified` → completed。doubao-b7-test 回写 `logged_in`、`submit_count` 0→1、`success_count` 0→1、`last_used_at`。**验收 #17 登录失效部分 ✅**（验证码/网页结构变化仍待注入，见 B8）。
+
+**观察：** ①新账号默认 `unknown` 状态，auto 轮换会跳过它，需显式指定账号执行；②login_required 失败轮的「继续执行」能正确区分「页面未提交过」并转入全新执行；③临时账号验收后保留（用户决定），现为 `logged_in`，会参与 auto 轮换并消耗其登录账号额度；④过程中用户自行点了 doubao-main/doubao-second 的「打开登录窗口」——doubao-main 已重新识别为 logged_in（11:53:34），doubao-second 现为 `login_pending`（用户确认知情且不影响 B7 验收）；auto 轮换将跳过 doubao-second，直至其再次完成一次登录识别。
 
 ### 2026-11-09（B6 断网注入 + 两处修复 + #17 清理）
 

@@ -24,6 +24,7 @@ Invoke-Step 'prototype: downloader' { node prototype/src/validate-downloader.js 
 Invoke-Step 'sidecar: downloader' { node sidecar/src/downloader.js }
 Invoke-Step 'sidecar: pool' { node sidecar/src/pool.js }
 Invoke-Step 'sidecar: scanner' { node sidecar/src/scanner.test.js }
+Invoke-Step 'sidecar: detectors' { node sidecar/src/detectors.test.js }
 Invoke-Step 'sidecar: extractor (DOM 兜底去重)' { node sidecar/src/extractor.test.js }
 Invoke-Step 'sidecar: overlays (headless chromium)' { node sidecar/src/overlays.test.js }
 Invoke-Step 'Rust unit tests' {

@@ -964,6 +964,7 @@ fn load_latest_round(tid: i64) -> Result<Option<(i64, i64, String)>, String> {
 fn classify_gen_failure(reason: &str) -> (&'static str, &'static str) {
     match reason {
         "login_required" => ("needs_manual_intervention", "登录失效，请在可见浏览器中手动登录后继续"),
+        "captcha_required" => ("needs_manual_intervention", "需要验证码/人机验证，请在可见浏览器中手动完成后继续"),
         "upload_input_not_found" | "submit_button_not_found" | "textbox_not_found" | "submit_click_failed" => {
             ("needs_manual_intervention", "未找到页面关键元素或点击被遮挡，请关闭页面中的遮罩后继续")
         }
@@ -2546,6 +2547,18 @@ mod tests {
         let still2 = absorb_download_results(&mut merged2, &pending, &results, 3, 3);
         assert_eq!(still2.len(), 1);
         assert_eq!(merged2.len(), 2);
+    }
+
+    #[test]
+    fn classify_gen_failure_maps_manual_intervention_reasons() {
+        assert_eq!(
+            classify_gen_failure("login_required"),
+            ("needs_manual_intervention", "登录失效，请在可见浏览器中手动登录后继续")
+        );
+        assert_eq!(
+            classify_gen_failure("captcha_required"),
+            ("needs_manual_intervention", "需要验证码/人机验证，请在可见浏览器中手动完成后继续")
+        );
     }
 
     #[test]

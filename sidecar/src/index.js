@@ -37,6 +37,7 @@ const { scanFolders } = require('./scanner');
 const { ImagePool } = require('./pool');
 const { downloadImage } = require('./downloader');
 const { dismissPageOverlays, waitAndDismissOverlays, setLogger } = require('./overlays');
+const { isCaptchaText } = require('./detectors');
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
 
@@ -627,6 +628,13 @@ async function generateImagesInner(cmd) {
   if (/扫码登录|手机号登录|验证码登录|立即登录/.test(pageText) && !/退出|个人中心/.test(pageText)) {
     await saveDiag('login_required');
     return { ok: false, reason: 'login_required' };
+  }
+
+  // 验证码/人机风控检查：暂停等待人工处理（绝不自动绕过），落诊断信息
+  if (isCaptchaText(pageText)) {
+    log('warn', '检测到验证码/人机风控页，暂停等待人工处理');
+    await saveDiag('captcha_required');
+    return { ok: false, reason: 'captcha_required' };
   }
 
   // 2. 找上传入口（优先隐藏 input[type=file]；否则点开上传按钮）

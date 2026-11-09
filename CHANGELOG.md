@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 新增验证码/人机风控页检测：sidecar 在登录检查后识别风控特征文本（`请完成…验证`/`拖动滑块`/`滑动拼图`/`人机验证`/`安全验证`/`人脸验证`/`访问频繁`/`操作频繁`/`captcha`，避开登录页「验证码登录」），检测到 → 保存诊断快照（截图+HTML+JSON 落 `output/diagnostics/`）→ `reason=captcha_required` 直接返回（不提交、不点击，绝不自动绕过）；Rust `classify_gen_failure` 映射为 `needs_manual_intervention`（通知「需要验证码/人机验证，请在可见浏览器中手动完成后继续」）。新增 `sidecar/src/detectors.js` 与 `detectors.test.js`（24 例，接入 `scripts/run-tests.ps1`）+ Rust 单元测试。
+
+### 验证
+
+- 验证码检测对照实测（task #19，doubao-b7-test，1 轮）：新检测器就位后真实豆包页面无误判，任务正常完成（5/5 `verified`）。真实验证码无法可靠触发（用户确认），注入测试记录跳过原因；检测路径为命中即停 + 诊断快照 + `needs_manual_intervention`，无绕过动作；网页结构变化走既有 `submit_button_not_found` 等兜底 + 诊断快照路径（未真实注入，B9 复核）。
+- 登录失效故障注入实测（task #18，B7）：新建未登录临时账号 doubao-b7-test → 任务触发 `login_required` → 任务落 `needs_manual_intervention`、round 1 `failed`、通知中心 kind=`needs_manual_intervention`（「登录失效，请在可见浏览器中手动登录后继续」）；用户重新登录后「继续执行」→ resume 探测「页面未提交过」→ 全新执行 → completed（4/4 `verified`）。无重复提交、日志无敏感信息；验收 #17 登录失效部分 ✅。
+
 ## [v1.2.0] - 2026-11-09
 
 ### 新增

@@ -10,8 +10,10 @@
 | 随机池单元测试 | 5 | 5 | 0 | ✅ |
 | Sidecar 参考图扫描器单元测试 | 7 | 7 | 0 | ✅ |
 | Sidecar 遮罩关闭单元测试 | 4 | 4 | 0 | ✅ |
-| Rust 单元测试 | 40 | 40 | 0 | ✅ |
-| **总计** | **98** | **98** | **0** | **✅ 全部通过** |
+| Sidecar DOM 兜底去重单元测试 | 5 | 5 | 0 | ✅ |
+| Sidecar 验证码/风控检测单元测试 | 24 | 24 | 0 | ✅ |
+| Rust 单元测试 | 42 | 42 | 0 | ✅ |
+| **总计** | **129** | **129** | **0** | **✅ 全部通过** |
 
 ## 测试环境
 
@@ -284,6 +286,43 @@
 
 **验收：** 23.3 #16 ✅；B6 todo 闭合。
 
+### 2026-11-09 B8：验证码/人机风控检测实现 + 故障注入对照（task #19）
+
+环境：dev 实例（HEAD `6a06b5f` + 未提交修改）；注入方式：真实验证码**无法可靠触发**（用户确认），改为「补齐验证码检测实现 + 离线用例 + 真实对照」。实现：新增 `sidecar/src/detectors.js`（风控特征文本识别，避开登录页「验证码登录」）、`sidecar/src/index.js` 登录检查后检测到风控 → `saveDiag('captcha_required')` → `reason=captcha_required` 直接返回（不提交、不点击，不绕过）；Rust `classify_gen_failure` 映射 `captcha_required → needs_manual_intervention`（通知「需要验证码/人机验证，请在可见浏览器中手动完成后继续」）；`classify_gen_failure_maps_manual_intervention_reasons` 单元测试（Rust 42/42 通过，target3 离线构建）。
+
+| 测试项 | 预期 | 结果 |
+|---|---|---|
+| detectors 离线用例 | 风控文本命中、登录页/正常页不误判 | ✅ 24/24（含「扫码登录 手机号登录 验证码登录」不判风控、「请完成下列验证」命中、`captcha`/`not a robot` 命中） |
+| Rust 分类器 | `captcha_required` → `needs_manual_intervention` | ✅ 42/42 通过；新用例覆盖 login_required 与 captcha_required 两条映射 |
+| 真实对照（task #19，doubao-b7-test，1 轮） | 正常豆包页面**不误判**，任务正常完成 | ✅ 复测时新检测器就位；#19 正常提交→生成→提取→下载→校验 5/5 `verified`（04:19–04:20 UTC）→ completed |
+| 真实验证码注入 | 暂停 + 通知 + 不自动绕过 | ⏭️ 无法可靠触发（用户确认），记录跳过原因：检测器命中后直接返回失败（零自动操作）→ `saveDiag` 截图/HTML/JSON → `needs_manual_intervention` + kind=`needs_manual_intervention`；路径无绕过动作 |
+| 网页结构变化 | 诊断快照 + 需人工处理 | ⏭️ 未真实注入（无法在不改豆包页面前提下构造）；对照：`submit_button_not_found`/`textbox_not_found`/`upload_input_not_found` → saveDiag（`output/diagnostics/<tag>_<stamp>.png/html/json`）→ `needs_manual_intervention`；诊断产物在 B9 真实失败场景复核 |
+
+**观察（实现审计附带）：** overlays.js 通用遮罩关闭对风控弹窗无效但无害（点关闭≠解决，任务仍停在兜底失败处）；检测仅位于页面进入顶层关卡，上传/提交后出现风控由 prompt/submit 兜底拦截；resume 路径未加检测（风控页 resume 探测失败即停，人工介入）。**已知不足**：真实豆包风控文案未经过真实页面验证，特征字符集可能需要按真实风控页调整。
+
+**验收：** #17 验证码部分=实现+离线验证（真实注入记录跳过原因）；B8 todo 闭合。
+
+### 2026-11-09 B7：登录失效故障注入实测（task #18）
+
+环境：dev 实例（HEAD = v1.2.0 `6a06b5f`）；注入方式为「新建未登录临时账号」——账号 #3 `doubao-b7-test`（全新空资料目录 `accounts\3\user-data`，天然未登录，不触碰 doubao-main/doubao-second 登录态）；项目 #2 镊子；显式指定账号 #3；1 轮；confirm_before_submit=false。时间均为本地（UTC+8），DB `created_at` 为 UTC。
+
+| 测试项 | 预期 | 结果 |
+|---|---|---|
+| 触发任务 | 侧车打开可见浏览器（全新未登录资料目录），打开 doubao.com | ✅ 11:45:11 任务 #18 preparing → 11:45:13 uploading → 抽图/上传流程照常推进 |
+| 登录失效识别 | 页面提示登录 → `login_required`，不上传/不提交 | ✅ 11:45:21 sidecar 登录检查命中（`扫码登录/手机号登录/…` 且无「退出/个人中心」）→ `login_required`；`submit_count` 保持 0 |
+| 任务状态 | 落 `needs_manual_intervention`（非 `failed`） | ✅ 任务 #18 → `needs_manual_intervention`；round 1 `failed`，`failure_reason=login_required` |
+| 通知中心 | 产生 kind=`needs_manual_intervention` 通知 | ✅ 通知 id=33（11:45:21）：「需人工处理 … 任务 #18 需要手动处理 … 原因：生图未完成（login_required）: 登录失效，请在可见浏览器中手动登录后继续」 |
+| 日志脱敏 | 无 Cookie/token/password | ✅ 日志仅含流程与原因文本，无敏感信息 |
+| 恢复路径 | 用户重新登录后「继续执行」→ 正常完成 | ✅ 用户在可见 Chrome 中登录（doubao.com/chat/?from_login=1）→ 11:57:03 继续执行 → resume 探测「全新对话且未提交」→ **全新执行**（不重复提交）→ 11:57:57 提取→下载→校验 4/4 通过 → completed |
+| 账号回写 | 登录检测后账号回写 logged_in | ✅ doubao-b7-test → `logged_in`，`submit_count` 0→1、`success_count` 0→1、`last_used_at` 已回写；4 张图 `download_status='verified'` |
+
+**观察：**
+- `accounts.status='unknown'` 的新账号走 auto 轮换时会被跳过（eligible 需 `logged_in`）；显式指定账号可正常执行。
+- 任务经 login_required 失败后，「继续执行」的 resume 探测正确区分「页面未提交过」→ 转入全新执行，未把失败轮当作已提交 resume 处理，无重复提交。
+- 临时账号 doubao-b7-test 验收后**保留**（用户决定）：现已 `logged_in`，会参与 auto 轮换，后续任务可能使用它并消耗其登录账号额度——如不希望，请在账号管理页将其删除或调低阈值。
+
+**验收：** 23.3 #17 登录失效部分 ✅（验证码/网页结构变化仍待注入，见 B8）；B7 todo 闭合。
+
 ### 手动测试步骤
 
 ```bash
@@ -346,8 +385,9 @@ cargo tauri build
 | 参考图扫描与抽取 | sidecar/src/scanner.test.js | 7 | 100% |
 | 遮罩关闭逻辑 | sidecar/src/overlays.test.js | 4 | 100% |
 | DOM 兜底去重 | sidecar/src/extractor.test.js | 5 | 100% |
-| Rust 调度/迁移/命令 | src-tauri/Cargo | 41 | 100% |
-| **总计** | - | **109** | **100%** |
+| 验证码/风控检测 | sidecar/src/detectors.test.js | 24 | 100% |
+| Rust 调度/迁移/命令 | src-tauri/Cargo | 42 | 100% |
+| **总计** | - | **129** | **100%** |
 
 ## 文档完整性检查
 
@@ -366,5 +406,5 @@ cargo tauri build
 
 ---
 
-*测试报告更新时间：2026-11-09（含 B6 断网注入实测 + DOM 兜底去重离线测试 + RoundDetail asset 修复）*
+*测试报告更新时间：2026-11-09（含 B6 断网注入实测 + B7 登录失效故障注入实测 + B8 验证码检测实现与对照 + DOM 兜底去重离线测试 + RoundDetail asset 修复）*
 *适用版本：v1.1.0*
