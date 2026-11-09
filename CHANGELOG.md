@@ -9,6 +9,7 @@
 ### 验证
 
 - 验证码检测对照实测（task #19，doubao-b7-test，1 轮）：新检测器就位后真实豆包页面无误判，任务正常完成（5/5 `verified`）。真实验证码无法可靠触发（用户确认），注入测试记录跳过原因；检测路径为命中即停 + 诊断快照 + `needs_manual_intervention`，无绕过动作；网页结构变化走既有 `submit_button_not_found` 等兜底 + 诊断快照路径（未真实注入，B9 复核）。
+- 失败诊断复现验证（task #17/#18，B9）：两次真实失败场景（login_required、generation_timeout）诊断三件齐全——截图+HTML+`diagnostics/*.json`{tag,url,timestamp}（url 含具体 chat 页地址）；extract 失败路径确认同写三件；执行日志 0/225、通知 0/6、诊断 HTML 无 Cookie/密码/token 实值；失败轮次目录保留 prompt.txt+references.json；验收 #18 ✅。
 - 登录失效故障注入实测（task #18，B7）：新建未登录临时账号 doubao-b7-test → 任务触发 `login_required` → 任务落 `needs_manual_intervention`、round 1 `failed`、通知中心 kind=`needs_manual_intervention`（「登录失效，请在可见浏览器中手动登录后继续」）；用户重新登录后「继续执行」→ resume 探测「页面未提交过」→ 全新执行 → completed（4/4 `verified`）。无重复提交、日志无敏感信息；验收 #17 登录失效部分 ✅。
 
 ## [v1.2.0] - 2026-11-09

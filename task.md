@@ -1437,7 +1437,7 @@ README 中说明：
 | 15 | 软件关闭后能安全恢复未完成任务 | ✅（2026-11-08 本机重启验证：重启后未完成任务不自动执行，#8 显示「需人工处理 上次： 提交前」，原状态可见；手动「继续执行」即恢复入口） |
 | 16 | 不会因为状态不明而重复提交 | ✅（2026-11-09 B6：生成等待中断网注入（task #17）——sidecar 180s 判 `generation_timeout`，任务落 `needs_manual_intervention`（本次将该分类从 `failed` 对齐为 `needs_manual_intervention`）、通知 kind=`needs_manual_intervention`；`submit_count` 不增加（未确认提交不计数）、全程无重复提交；恢复网络「继续执行」→ resume 探测 `chat/<id>` 已生成 → 提取→下载→校验→completed） |
 | 17 | 能处理登录失效、验证码和网页结构变化 | 🟡（登录失效：2026-11-09 B7 故障注入实测通过（task #18）。验证码：2026-11-09 B8——新增 `captcha_required` 检测（登录检查后风控文本识别 + 诊断快照 + `needs_manual_intervention`），离线 24 用例 + 真实对照任务 #19 通过，但真实验证码无法可靠触发，未做注入实测。网页结构变化：走 `submit_button_not_found`/`textbox_not_found`/`upload_input_not_found` 既有兜底（诊断快照 + 需人工处理），未真实注入） |
-| 18 | 能保留错误截图和诊断信息 | 🟡（已实现 URL/截图保存，未在真实失败场景复现验证） |
+| 18 | 能保留错误截图和诊断信息 | ✅（2026-11-09 B9：真实失败场景复核——B7 login_required（task #18）与 B6 generation_timeout（task #17）诊断三件齐全（截图+HTML+`diagnostics/*.json`{tag,url,timestamp}，url 含具体 chat 页地址）；extract 失败诊断路径确认同写 png+html+json（磁盘唯一历史实例 2026-11-06 为 c9558bd「失败诊断」之前产物，无 json，非回归）；执行日志 0/225、通知 0/6、诊断 HTML 无 Cookie/密码/token 实值；失败轮次目录保留 prompt.txt+references.json） |
 | 19 | 能查看和导出完整执行日志 | 🟡（筛选/导出 UI 与命令已接线并通过 GUI 渲染验证，未实际写出 CSV 导出文件对账） |
 | 20 | 支持中文和英文 | ✅ |
 | 21 | 支持检查和安装软件更新 | 🟡（更新/安装流程已实现并通过静态检查，未用真实新版本端到端验证） |
@@ -1448,6 +1448,21 @@ README 中说明：
 - `docs/TECHNICAL_VALIDATION.md` 的 Phase 0 结论基于源码分析，登录后环节的实测记录见 `docs/TESTING.md`；两者应结合阅读。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-09（B9 失败诊断复现验证，task #17/#18 均为真实零额度复核）
+
+**复核对象（均已真实落盘，无新增生图/额度消耗）：**
+- B7（task #18，login_required）：`output/diagnostics/login_required_2026-11-09T03-45-20-965Z.{png,html,json}` —— png 95,343 B（有效截图）、html 690,538 B、json `{tag:'login_required', url:'https://www.doubao.com/chat/', timestamp:'2026-11-09T03:45:21.147Z'}`。
+- B6（task #17，generation_timeout）：`generation_timeout_2026-11-09T00-44-51-301Z.{png,html,json}` —— png 192,090 B、html 713,030 B、json `{tag:'generation_timeout', url:'https://www.doubao.com/chat/38452620850008578', timestamp:'2026-11-09T00:44:52.760Z'}`（url 含具体聊天页地址，便于定位失败现场）。
+- extract 失败诊断路径（index.js）：代码确认写 `extract_<stamp>.{png,html,json}`（`{tag:'extract', url, timestamp}`）；磁盘上唯一历史实例（2026-11-06 20:47）只有 png+html——产生于 c9558bd「失败诊断（URL+截图）」提交（11-07）**之前**，属旧版本产物、非回归；当前代码路径无此缺失。
+- 失败轮次目录：任务 #18 失败轮 `output/20261109_114513_571` 保留 `prompt.txt`(1,117 B)+`references.json`(1,544 B)（task.json 仅成功轮写入，实现如此）。
+
+**脱敏复核：**
+- `execution_logs` 全量 225 行关键词扫描（cookie/token/password/passwd/secret/authorization/bearer/api-key/session）→ **0 命中**；通知中心 6 条消息 → **0 命中**；`sidecar-spawn.log` 仅路径/入口，无敏感信息。
+- 诊断 HTML（3 份）关键词匹配均为豆包静态 JS chunk 名/SSR 空字段（`has_password:0`、`page_token:""`）/reporter 静态代码（`hook_slardar_session_id` 正则），**无 Cookie/密码/token 实值**；针对性扫描 `sessionid|passport|csrf|ticket|sid_tt|session_id` 赋值模式 → 仅静态 JS 标识，无 `name=<值>` 形态。
+- 附：诊断 HTML 含页面 SSR 的 `_ROUTER_DATA.accountInfo`（头像 URL、uid 等页面自身数据，登录页外壳亦携带）；与浏览器档案同源，落在本机项目 `output/diagnostics/` 下，属页面原文留存。不含跨账号凭据；如需长期清理可删该目录（会影响诊断用途）。
+
+**验收：** 23.3 #18 ✅；B9 todo 闭合。注：B6 失败发生在当时新分类生效前（round failed→resume 完成），诊断为同一 saveDiag 路径产出，复核仍有效。
 
 ### 2026-11-09（B8 验证码/网页结构变化故障注入）
 

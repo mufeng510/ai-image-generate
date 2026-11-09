@@ -286,6 +286,23 @@
 
 **验收：** 23.3 #16 ✅；B6 todo 闭合。
 
+### 2026-11-09 B9：失败诊断复现验证（task #17/#18，零额度复核，无新增生图）
+
+环境：对已落盘的两次真实失败场景复核诊断产物与日志脱敏；对象为 B7 登录失效失败（task #18，2026-11-09 11:45 本地）与 B6 断网生成超时失败（task #17，2026-11-09 00:44 本地）。复核时间 2026-11-09 12:40 左右（本地）；DB `created_at` 为 UTC。
+
+| 测试项 | 预期 | 结果 |
+|---|---|---|
+| login_required 诊断三件套（task #18） | `output/diagnostics/login_required_*.png/html/json` 齐全 | ✅ png 95,343 B；html 690,538 B；json `{tag, url:'https://www.doubao.com/chat/', timestamp:'2026-11-09T03:45:21.147Z'}` |
+| generation_timeout 诊断三件套（task #17） | 截图+HTML+URL 同样齐全 | ✅ png 192,090 B；html 713,030 B；json `{tag, url:'https://www.doubao.com/chat/38452620850008578', timestamp:'2026-11-09T00:44:52.760Z'}`（url 含具体 chat 页地址） |
+| extract 失败诊断路径 | 代码确认写 extract_*.json（tag/url/timestamp） | ✅ index.js 确认同写三件；磁盘唯一历史实例（2026-11-06 20:47，仅 png+html）产生于 c9558bd「失败诊断（URL+截图）」提交（11-07）之前，旧版本产物、非回归 |
+| 失败轮次目录 | prompt.txt / references.json 保留 | ✅ task #18 失败轮 `output/20261109_114513_571`：`prompt.txt` 1,117 B + `references.json` 1,544 B（`task.json` 仅成功轮写入，实现如此） |
+| 执行日志脱敏 | execution_logs 无 Cookie/token/password 等 | ✅ 全量 225 行关键词扫描 0 命中；通知中心 6 条 0 命中；`sidecar-spawn.log` 无敏感信息 |
+| 诊断 HTML 脱敏 | 无 Cookie/密码/token 实值 | ✅ 匹配均为豆包静态 JS chunk 名/SSR 空字段（`has_password:0`、`page_token:""`）/reporter 静态代码；`sessionid|passport|csrf|ticket|session_id` 赋值扫描无 `name=<值>` 形态 |
+
+**附注：** 诊断 HTML 含页面 SSR 的 `_ROUTER_DATA.accountInfo`（头像 URL/uid 等页面自身数据），与浏览器档案同源、落在本机项目 `output/diagnostics/`，属页面原文留存，不含跨账号凭据；该目录可手动清理（会削弱诊断能力）。B6 断网失败诊断由同一 `saveDiag` 路径产出（当时分类为 failed，不影响诊断留存）。
+
+**验收：** 23.3 #18 ✅；B9 todo 闭合。
+
 ### 2026-11-09 B8：验证码/人机风控检测实现 + 故障注入对照（task #19）
 
 环境：dev 实例（HEAD `6a06b5f` + 未提交修改）；注入方式：真实验证码**无法可靠触发**（用户确认），改为「补齐验证码检测实现 + 离线用例 + 真实对照」。实现：新增 `sidecar/src/detectors.js`（风控特征文本识别，避开登录页「验证码登录」）、`sidecar/src/index.js` 登录检查后检测到风控 → `saveDiag('captcha_required')` → `reason=captcha_required` 直接返回（不提交、不点击，不绕过）；Rust `classify_gen_failure` 映射 `captcha_required → needs_manual_intervention`（通知「需要验证码/人机验证，请在可见浏览器中手动完成后继续」）；`classify_gen_failure_maps_manual_intervention_reasons` 单元测试（Rust 42/42 通过，target3 离线构建）。
@@ -406,5 +423,5 @@ cargo tauri build
 
 ---
 
-*测试报告更新时间：2026-11-09（含 B6 断网注入实测 + B7 登录失效故障注入实测 + B8 验证码检测实现与对照 + DOM 兜底去重离线测试 + RoundDetail asset 修复）*
+*测试报告更新时间：2026-11-09（含 B6 断网注入实测 + B7 登录失效故障注入实测 + B8 验证码检测实现与对照 + B9 失败诊断复现验证 + DOM 兜底去重离线测试 + RoundDetail asset 修复）*
 *适用版本：v1.1.0*
