@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useI18n } from '@/i18n'
 import { logsQuery, logsExport, accountList, type Account, type LogEntry, type LogFilter } from '@/hooks/api'
+import { formatDateTime } from '@/utils/datetime'
 import { save } from '@tauri-apps/plugin-dialog'
 
 const LEVELS = ['info', 'warn', 'error', 'debug']
@@ -186,7 +187,7 @@ export default function LogsPage() {
               logs.map((log) => (
                 <tr key={log.id} style={{ borderBottom: '1px solid #e5e5e5' }}>
                   <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280', whiteSpace: 'nowrap' }}>
-                    {(log.created_at ?? '').replace('T', ' ').slice(0, 19)}
+                    {formatDateTime(log.created_at)}
                   </td>
                   <td style={{ padding: '10px' }}>
                     <span

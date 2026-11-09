@@ -33,6 +33,7 @@ import {
 } from '@/hooks/api'
 import { useI18n } from '@/i18n'
 import { useTaskStatusLabels } from '@/utils/taskStatus'
+import { formatDateTime } from '@/utils/datetime'
 
 const inputStyle: React.CSSProperties = {
   padding: '8px 12px',
@@ -576,8 +577,8 @@ export default function ProjectsPage() {
                       <td style={{ padding: '8px' }}>{STATUS_LABELS[h.status] || h.status}</td>
                       <td style={{ padding: '8px' }}>{h.current_round}/{h.total_rounds}</td>
                       <td style={{ padding: '8px' }}>{h.success_images}</td>
-                      <td style={{ padding: '8px', color: '#6b7280' }}>{h.created_at}</td>
-                      <td style={{ padding: '8px', color: '#6b7280' }}>{h.completed_at || '—'}</td>
+                      <td style={{ padding: '8px', color: '#6b7280' }}>{formatDateTime(h.created_at)}</td>
+                      <td style={{ padding: '8px', color: '#6b7280' }}>{formatDateTime(h.completed_at) || '—'}</td>
                     </tr>
                   ))}
                 </tbody>

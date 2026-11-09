@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { accountList, accountAdd, accountDelete, accountOpenLogin, accountReorder, accountThresholdSet, type Account } from '@/hooks/api'
 import { useI18n } from '@/i18n'
+import { formatDateTime } from '@/utils/datetime'
 
 const smallBtn: React.CSSProperties = {
   background: '#f3f4f6',
@@ -15,8 +16,7 @@ const smallBtn: React.CSSProperties = {
 }
 
 function fmtTime(value?: string): string {
-  if (!value) return '—'
-  return value.replace('T', ' ').slice(0, 19)
+  return formatDateTime(value) || '—'
 }
 
 export default function AccountsPage() {

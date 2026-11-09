@@ -12,6 +12,7 @@
 - 修复「提交后等待生成超时」落 `failed` 与验收预期不符的问题（验收 #16）：页面状态未知时任务现落 `needs_manual_intervention`（`classify_gen_failure` 拆分 `generation_timeout`、两条 `wait_result` 超时路径同步修改），恢复路径统一由「继续执行」页面探测，绝不自动重复提交；`goto_failed` 保持 `failed`（提交前失败）
 - 修复 DOM 兜底提取把同一底图的缩略图（`cthumb_*`）与高清图（`cgen_*`）各算一张、导致每轮多下载一倍图片且缩略图与高清图重复的问题（task #17 输出 10 张、画面相同）：去重改按底图路径为键（忽略 CDN 域/查询签名/`~tplv` 缩放后缀），同键只保留一张、cgen 高清图优先；新增 `sidecar/src/extractor.test.js`（5 项，含 #17 实测 URL fixture）并接入 `scripts/run-tests.ps1`
 - 修复软件内（轮次详情页）生成图片不显示的问题：`RoundDetail.tsx` 改用 `convertFileSrc()` 加载本地图（原 `file://` 被 Tauri CSP 的 img-src 拦截，CSP 仅放行 asset:/http://asset.localhost）
+- 修复软件内时间按 UTC 原文显示、看起来“乱乱的”的问题：新增 `src/utils/datetime.ts`（`formatDateTime`，RFC3339 容错解析并按本地时区格式化为 `YYYY-MM-DD HH:mm:ss`），轮次详情/执行日志/通知中心/账号管理（最近使用时间）/项目任务历史统一使用；通知中心保留分钟精度
 - 修复 dev 模式 vite watch 误扫 scratch 构建目录 `target3/` 导致启动崩溃（EBUSY）：`vite.config.ts` watch.ignored 增加 `**/target3/**`，`.gitignore` 忽略 `target3/`
 
 ### 验证

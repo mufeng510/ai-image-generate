@@ -16,6 +16,7 @@ import {
 } from '@/hooks/api'
 import { useI18n } from '@/i18n'
 import { useTaskStatusLabels, useDownloadStatusLabels } from '@/utils/taskStatus'
+import { formatDateTime } from '@/utils/datetime'
 
 const STATUS_COLORS: Record<string, string> = {
   preparing: '#6b7280',
@@ -151,7 +152,7 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
                   {round.success_count ?? 0 + (round.failure_reason ? 0 : 0)}
                 </td>
                 <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>
-                  {round.submitted_at || '-'}
+                  {formatDateTime(round.submitted_at) || '-'}
                 </td>
                 <td style={{ padding: '10px' }}>
                   <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
@@ -201,8 +202,8 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <div style={{ fontSize: '13px', color: '#6b7280', textAlign: 'right' }}>
-                {selectedRound.submitted_at || '-'}{' | '}
-                {selectedRound.completed_at || '-'}
+                {formatDateTime(selectedRound.submitted_at) || '-'}{' | '}
+                {formatDateTime(selectedRound.completed_at) || '-'}
               </div>
               {selectedRound.output_dir && (
                 <button

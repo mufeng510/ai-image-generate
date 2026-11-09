@@ -11,6 +11,7 @@ import {
   type Notification,
 } from '@/hooks/api'
 import { useI18n } from '@/i18n'
+import { formatDateTime } from '@/utils/datetime'
 
 const LEVEL_DOT: Record<string, string> = {
   info: '#2563eb',
@@ -32,8 +33,7 @@ interface Props {
 }
 
 function fmtTime(value?: string): string {
-  if (!value) return ''
-  return value.replace('T', ' ').slice(0, 16)
+  return formatDateTime(value, false)
 }
 
 export default function NotificationCenter({ onOpenTask }: Props) {
