@@ -1407,7 +1407,7 @@ README 中说明：
     - **失败诊断**：抽图提取失败会保存截图 + 页面 HTML + 页面 URL（`extract_<stamp>.json`）；generate_images 阶段的 diag 也同步写入同一 `.json`（`tag`、`url`、`timestamp`），便于事后定位到登录页/风控页；
     - **日志脱敏**：sidecar `log()` 输出前统一经 `redact()` 处理：JSON 值与 `k=v` 形式中 cookie/set-cookie/authorization/token/csrf/secret/password/api_key/session/sid/api_key/password/pwd 等字段的值都替换为 `[REDACTED]`。
   - 验证：`cargo test` 33 项通过、`npx tsc --noEmit`、`npm run build`、`node --check src/index.js`。
-  - 未做：真实跑过一次开启 Trace 的生图任务（触发真实浏览器动作，需要用户许可后再验证；开启时仅影响调试，不影响正确性路径）。
+  - 2026-11-09 B12：真实跑过一次开启 Trace 的生图任务——见 23.5「B12」条目（task #20）。`trace.zip`（62 MB）落在轮次目录且被 `playwright show-trace` 完整回放（headless chromium 实测：时间线缩略图、actions 列表、豆包页面截图 5 张生成图、Network 896 请求全可见）。
 - [x] **P1-7 测试矩阵**：补齐文件夹单元识别、随机抽取、补足、池耗尽重洗、输出命名、状态转换、参数继承、账号阈值等单元测试；增加可重复运行的集成测试与真实浏览器 E2E。
   - 2026-11-07 完成（离线部分）：新增 `sidecar/src/scanner.test.js`（扫描器 7 项）→ sidecar/原型/ Rust 全覆盖 87 项离线断言；新增 `scripts/run-tests.ps1` 一键离线校验（不用碰真实豆包）。
   - Rust Cargo：33 项（schema 3、commands 7、task_scheduler 23，含账号阈值/picks/absorb_download_results/control state/输出命名/round-robin 阈值）。
@@ -1448,6 +1448,18 @@ README 中说明：
 - `docs/TECHNICAL_VALIDATION.md` 的 Phase 0 结论基于源码分析，登录后环节的实测记录见 `docs/TESTING.md`；两者应结合阅读。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-09（B12 Playwright Trace 真实任务验证，少量额度）
+
+**流程：** dev 实例（HEAD `365b477`）→ 设置页开启「启用 Playwright Trace」（`app_settings.playwright_trace=true`）→ 任务队列创建「项目 #2 镊子」1 轮任务（task #20，auto 选号 → doubao-b7-test id=3）→「开始」。验证后关闭开关（`playwright_trace=false`）。
+
+**结果：**
+- 任务 #20 completed（06:08:08 → 06:10:19，约 2 分 20 秒）；5/5 下载成功、`download_status='verified'`、本地 SHA-256 5/5 与库中一致；Doubao 对话页 `https://www.doubao.com/chat/38452626148839682`。
+- 轮次目录 `C:\Users\mi\Pictures\参考图\镊子\output\20261109_140808_701\` 落 `trace.zip`（62 MB）；python zipfile 核对结构 1332 项：`trace.trace`、`trace.network`、`trace.stacks`、`screencast/` 947 帧、`resources/` 382 资源。
+- `npx playwright show-trace -p 9323 trace.zip`（IPv6 `::1:9323`）回放：headless chromium 实测 viewer 完整加载——时间线缩略图 + actions 时间线（Navigate → click「图像生成」→ Set input files ×5 → Insert 提示词 → click 发送 → 轮询 `rc_gen_image` 至 1.7m）+ 豆包页面截图（5 张生成镊子图清晰可见）+ Network 896 请求 + Console 3 条；截图存档 `.tmp\b12_trace_viewer.png`。
+- 「不影响正确性路径」：trace 开启时任务按正常路径完成（5/5 verified、SHA 一致）；关闭后设置回写 `false`。trace 仅调试用（体积大），默认关闭。
+
+**验收：** P1-6 Trace 项 ✅（随 23.5 记录）；B12 todo 闭合。测试计数不变（无新单元测试）；TESTING.md 新增 B12 节 + 页脚说明更新；CHANGELOG Unreleased 已记。
 
 ### 2026-11-09（B11 wait_result 计时路径确定性测试）
 

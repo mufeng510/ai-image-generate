@@ -286,6 +286,20 @@
 
 **验收：** 23.3 #16 ✅；B6 todo 闭合。
 
+### 2026-11-09 B12：Playwright Trace 真实任务验证（少量额度，task #20）
+
+环境：dev 实例（HEAD `365b477`）；设置页「启用 Playwright Trace」开关开启（`app_settings.playwright_trace=true`）→ 任务队列创建「项目 #2 镊子」1 轮任务（task #20，auto 选号 → doubao-b7-test id=3）→「开始」。任务 06:08:08 → 06:10:19 完成（约 2 分 20 秒），5/5 下载成功、`download_status='verified'`、SHA-256 5/5 与库中一致。验证后关闭开关（`playwright_trace=false`，恢复默认）。
+
+| 测试项 | 预期 | 结果 |
+|---|---|---|
+| 轮次目录产出 trace.zip | 每轮 generate_images 结束写入 round 目录 | ✅ `C:\Users\mi\Pictures\参考图\镊子\output\20261109_140808_701\trace.zip`，62 MB |
+| trace.zip 结构完整 | trace.trace / trace.network / trace.stacks / screencast / resources | ✅ 1332 项：trace.trace、trace.network、trace.stacks、screencast/ 947 帧、resources/ 382 资源 |
+| playwright show-trace 可回放 | viewer 能加载并显示本轮会话 | ✅ `npx playwright show-trace -p 9323 trace.zip`；headless chromium 实测：时间线缩略图 + actions 时间线（导航→图像生成模式→Set input files 5 张→Insert 提示词→Click 发送→轮询 rc_gen_image）+ 豆包页面截图（5 张生成镊子图）+ Network 896 请求 + Console 3 条；截图存 `.tmp\b12_trace_viewer.png` |
+| 不影响正确性路径 | trace 开启时任务照常完成、校验通过 | ✅ 5/5 verified、SHA-256 一致 |
+| 默认关闭、恢复 | 验证后开关关闭 | ✅ `playwright_trace` 回写 `false`（GUI Toggle）；trace 仅调试用（体积大） |
+
+**验收：** P1-6 Trace 项 ✅；B12 todo 闭合。注：trace.zip 体积 62 MB（1 轮、含 screencast），印证开关默认关闭的设计；普通任务不要常开。
+
 ### 2026-11-09 B10：日志 CSV 导出实际对账（GUI + Python + Excel COM，零额度）
 
 环境：dev 实例（HEAD 之后未提交修改 + B8 的 `17a7b46`）；真实 app 数据（`execution_logs` 225 行）。`logs_export` 抽出纯函数 `render_logs_csv`（BOM + 表头 + csv_cell 转义），新增 3 个 Rust 单元测试（`csv_field` 引号/换行加倍、`csv_cell` 公式注入前缀、`render_logs_csv` BOM/表头/空字段/巨型消息转义）；`cargo test --offline --target-dir target3` 45/45 通过。原生保存对话框自动化不可点击（open-computer-use 对该对话框无效），导出由用户人工两次完成（全量 / 筛选任务ID=18）。
@@ -441,5 +455,5 @@ cargo tauri build
 
 ---
 
-*测试报告更新时间：2026-11-09（含 B6 断网注入实测 + B7 登录失效故障注入实测 + B8 验证码检测实现与对照 + B9 失败诊断复现验证 + B10 日志 CSV 导出对账 + B11 wait_result 计时路径确定性测试 + DOM 兜底去重离线测试 + RoundDetail asset 修复）*
+*测试报告更新时间：2026-11-09（含 B6 断网注入实测 + B7 登录失效故障注入实测 + B8 验证码检测实现与对照 + B9 失败诊断复现验证 + B10 日志 CSV 导出对账 + B11 wait_result 计时路径确定性测试 + B12 Playwright Trace 真实任务验证 + DOM 兜底去重离线测试 + RoundDetail asset 修复）*
 *适用版本：v1.1.0*
