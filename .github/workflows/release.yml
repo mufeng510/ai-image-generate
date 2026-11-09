@@ -41,9 +41,9 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
           releaseBody: |-
-            v1.3.0（2026-11-09）——见 CHANGELOG.md 的 [v1.3.0] 段。
+            v1.4.0（2026-11-09）——见 CHANGELOG.md 的 [v1.4.0] 段。
 
-            主要内容：新增验证码/人机风控页检测（captcha_required → 诊断快照 + needs_manual_intervention，绝不自动绕过）；日志 CSV 导出公式注入中和、CSV 渲染抽纯函数并逐单元格对账 0 不符；wait_result 计时路径确定性测试（48/48）；Playwright Trace 真实任务验证回放通过；B 系列故障注入实测闭合验收 #13–#19。
+            主要内容：生成完成按「预期张数」等待（全局默认 5、项目可覆盖；未满且不再增长则按已出张数继续）；提取不足自动重提取并按 identity 合并；缺图轮次标注「部分成功」并继续后续轮次；输出目录按任务归档（output/<任务名>/<时间戳>/）；任务结束（完成/失败/取消）自动关闭浏览器；设置页新增「每轮预期生成张数」、项目级覆盖、轮次详情成功/总数按预期显示。
 
             安装包自带内置运行时，安装后即可使用。
           releaseDraft: false

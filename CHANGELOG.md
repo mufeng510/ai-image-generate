@@ -6,6 +6,29 @@
 
 - 应用更新端到端闭环验证（B13，2026-11-09，用户授权发布 v1.3.0）：CI Release run 全绿（20m17s），GitHub Release v1.3.0 发布（NSIS 247MB+sig、MSI 343MB+sig、latest.json 三目标）；本机装机版（1.0.0，与 dev 共享 app.db）→ 设置页「检查更新」发现 1.3.0 →「下载并安装」→ 安装程序静默完成 → 应用自动重启；设置页显示 1.3.0；更新前后数据快照逐项一致（app.db 294912 B、tasks 20、task_images verified 41、execution_logs 236、accounts 及计数/状态、cursor=6、账号目录 7506 文件/563 MB、输出根 208 文件/148 MB 全一致）。验收 #21 ✅。
 
+## [v1.4.0] - 2026-11-09
+
+### 新增
+
+- 生成完成等待支持「预期张数」：全局默认（设置页「每轮预期生成张数」，默认 5，1–20，留空 = 关闭按数量等待）+ 项目级覆盖（项目 → 生成参数，留空 = 沿用全局；项目 > 全局 > 默认 5）。等待逻辑按底图标识去重计数，**满预期才提取**；未满但 20 秒不再增长则按已出张数继续（避免豆包只出部分图时空等）；未知预期时稳定窗口放宽到 10 秒。
+- 提取不足时自动重提取并按 `identity` 去重合并（最多 3 次、间隔 12 秒，晚生成的图可被补提取）。
+- 缺图时不再暂停等人工：轮次标注「部分成功」（`partial`，保留 `incomplete_images: 仅获取 N/M 张`），保留已下载内容并继续后续轮次；轮次详情显示「已获取 N/M 张」（少图红色高亮）。
+- 输出目录按任务归档：`output/<任务名>/<yyyyMMdd_HHmmss_fff>/`，任务名非法路径字符自动清洗为 `-`（截断 80 字符）；任务专属目录各轮共享。
+- 任务进入终态（完成/失败/取消）后自动关闭该账号浏览器；`paused` / `needs_manual_intervention` / `waiting_confirmation` 保留浏览器以便人工恢复。
+
+### 修复
+
+- 修复豆包渐进出图时程序被「数量稳定」误判完成、导致轮次少于预期的问题（本次重写等待/提取逻辑；第 1 轮 4/5 复现实例，第 2/3/4 轮原有 5/5 不受影响）。
+- 修复轮次详情「成功/总数」的总数恒等于成功数的笔误（`success_count / success_count`），现显示真实预期值。
+
+### 迁移
+
+- 无数据库破坏性变更：`projects.expected_images_per_round`、`task_rounds.expected_count` 自动增量迁移（user_version → 4），旧轮次显示与行为按缺省兜底。回滚到 v1.3.0 无害（新列保留，v1.3.0 不读）。
+
+### 验证
+
+- `scripts/run-tests.ps1` 全绿：Rust 54/54（新增 `merge_expected_images_*`、`merge_extracted_images_*`、`terminal_task_status_matrix`、`sanitize_dir_component_*`、迁移测试升 v4）、`tsc --noEmit`、`vite build`、sidecar 测试套件全绿；devkit verify PASS。缺图端到端场景未对豆包实页验证（需真实生图额度）。
+
 ## [v1.3.0] - 2026-11-09
 
 ### 新增
