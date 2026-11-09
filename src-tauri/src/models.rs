@@ -67,6 +67,8 @@ pub struct TaskRound {
     pub completed_at: Option<String>,
     pub success_count: Option<i64>,
     pub failure_reason: Option<String>,
+    /// 本轮预期生成张数（提交时解析并记录；None = 未知/旧数据）
+    pub expected_count: Option<i64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

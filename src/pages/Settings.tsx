@@ -24,6 +24,7 @@ export default function SettingsPage() {
   const [playwrightTrace, setPlaywrightTrace] = useState(false)
   const [autoRunGate, setAutoRunGate] = useState(false)
   const [defaultQuota, setDefaultQuota] = useState('0')
+  const [expectedImages, setExpectedImages] = useState('5')
 
   async function load() {
     const v = await settingsGet('project_root')
@@ -46,6 +47,8 @@ export default function SettingsPage() {
     const ga = await settingsGet('gen_params_apply'); setGenApply(ga === 'true')
     const dq = await settingsGet('default_account_daily_quota')
     if (dq != null) setDefaultQuota(dq)
+    const ei = await settingsGet('expected_images_per_round')
+    setExpectedImages(ei == null ? '5' : ei)
     schedulerAutoRunGet().then(setAutoRunGate).catch(() => setAutoRunGate(false))
     getVersion().then(setVersion).catch(() => setVersion('unknown'))
   }
@@ -102,6 +105,24 @@ export default function SettingsPage() {
     try {
       await settingsSet(key, value ? 'true' : 'false')
       setVal(value)
+    } catch (e) {
+      alert(t('settings.saveFailed') + e)
+    }
+  }
+
+  async function saveExpectedImages() {
+    const trimmed = expectedImages.trim()
+    if (trimmed !== '') {
+      const n = Number(trimmed)
+      if (!Number.isInteger(n) || n < 1 || n > 20) {
+        alert(t('settings.expectedImagesInvalid'))
+        return
+      }
+    }
+    try {
+      await settingsSet('expected_images_per_round', trimmed)
+      setExpectedImages(trimmed)
+      alert(t('settings.saveSuccess'))
     } catch (e) {
       alert(t('settings.saveFailed') + e)
     }
@@ -198,6 +219,23 @@ export default function SettingsPage() {
             <input type="checkbox" checked={genApply} onChange={(e) => toggleGenApply(e.target.checked)} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
             {t('settings.genParamsApply')}
           </label>
+        </div>
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.expectedImages')}</label>
+          <p style={{ fontSize: '12px', color: '#9ca3af', margin: '0 0 8px' }}>{t('settings.expectedImagesNote')}</p>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              type="number"
+              min={1}
+              max={20}
+              value={expectedImages}
+              onChange={(e) => setExpectedImages(e.target.value)}
+              placeholder="5"
+              style={{ width: '120px', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <span style={{ fontSize: '13px', color: '#6b7280' }}>{t('settings.expectedImagesUnit')}</span>
+            <button onClick={saveExpectedImages} style={{ padding: '8px 14px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>{t('btn.save')}</button>
+          </div>
         </div>
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.maxRetries')}</label>

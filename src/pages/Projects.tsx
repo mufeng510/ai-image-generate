@@ -21,6 +21,8 @@ import {
   projectRefOpen,
   projectGenParamsGet,
   projectGenParamsSet,
+  projectExpectedImagesGet,
+  projectExpectedImagesSet,
   GEN_MODEL_OPTIONS,
   GEN_RATIO_OPTIONS,
   GEN_STYLE_OPTIONS,
@@ -114,7 +116,7 @@ export default function ProjectsPage() {
   const [preview, setPreview] = useState<{ item: ReferenceItem; projectId: number } | null>(null)
   const [detail, setDetail] = useState<ReferenceDetail | null>(null)
 
-  const [genParamsEditor, setGenParamsEditor] = useState<{ id: number; name: string; model: string; ratio: string; style: string } | null>(null)
+  const [genParamsEditor, setGenParamsEditor] = useState<{ id: number; name: string; model: string; ratio: string; style: string; expected: string } | null>(null)
 
   useEffect(() => {
     load()
@@ -303,7 +305,14 @@ export default function ProjectsPage() {
   async function handleOpenGenParams(p: Project) {
     try {
       const g: GenParams = await projectGenParamsGet(p.id!)
-      setGenParamsEditor({ id: p.id!, name: p.name, model: g.model ?? '', ratio: g.ratio ?? '', style: g.style ?? '' })
+      let expected = ''
+      try {
+        const n = await projectExpectedImagesGet(p.id!)
+        expected = n == null ? '' : String(n)
+      } catch (_) {
+        expected = ''
+      }
+      setGenParamsEditor({ id: p.id!, name: p.name, model: g.model ?? '', ratio: g.ratio ?? '', style: g.style ?? '', expected })
     } catch (e) {
       alert(t('projects.paramsFailed') + e)
     }
@@ -311,12 +320,23 @@ export default function ProjectsPage() {
 
   async function handleSaveGenParams() {
     if (!genParamsEditor) return
+    const expectedTrim = genParamsEditor.expected.trim()
+    let expectedValue: number | null = null
+    if (expectedTrim !== '') {
+      const n = Number(expectedTrim)
+      if (!Number.isInteger(n) || n < 1 || n > 20) {
+        alert(t('projects.expectedImagesInvalid'))
+        return
+      }
+      expectedValue = n
+    }
     try {
       await projectGenParamsSet(genParamsEditor.id, {
         model: genParamsEditor.model.trim() || null,
         ratio: genParamsEditor.ratio.trim() || null,
         style: genParamsEditor.style.trim() || null,
       })
+      await projectExpectedImagesSet(genParamsEditor.id, expectedValue)
       alert(t('settings.saveSuccess'))
       setGenParamsEditor(null)
     } catch (e) {
@@ -612,6 +632,19 @@ export default function ProjectsPage() {
                   <option value="">（沿用全局）</option>
                   {GEN_RATIO_OPTIONS.map((r) => (<option key={r} value={r}>{r}</option>))}
                 </select>
+              </label>
+              <label style={{ fontSize: '13px', color: '#6b7280' }}>
+                {t('projects.expectedImages')}
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={genParamsEditor.expected}
+                  onChange={(e) => setGenParamsEditor({ ...genParamsEditor, expected: e.target.value })}
+                  placeholder={t('projects.expectedImagesPlaceholder')}
+                  style={{ display: 'block', width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px', marginTop: '4px', boxSizing: 'border-box' }}
+                />
+                <span style={{ fontSize: '11px', color: '#9ca3af', display: 'block', marginTop: '4px' }}>{t('projects.expectedImagesNote')}</span>
               </label>
               <label style={{ fontSize: '13px', color: '#6b7280' }}>
                 {t('settings.genParamsStyle')}

@@ -35,6 +35,7 @@ const STATUS_COLORS: Record<string, string> = {
   downloading: '#2563eb',
   verifying: '#2563eb',
   completed: '#16a34a',
+  partial: '#d97706',
   paused: '#ea580c',
   failed: '#dc2626',
   cancelled: '#6b7280',

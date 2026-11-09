@@ -393,23 +393,70 @@ async function findSubmitButton(page) {
   return null;
 }
 
-/** 统计页面上已生成图片数量（只统计 rc_gen_image 生成产物，避免把参考图缩略图算成生成图） */
+/** 统计页面上已生成图片的数量（按底图标识去重，避免缩略图/高清图双 <img> 重复计数）。
+ *  只统计 rc_gen_image 生成产物，避免把参考图缩略图算成生成图 */
 async function countGeneratedImages(page) {
-  return await page.locator('img[src*="rc_gen_image"]').count().catch(() => 0);
+  return await page.evaluate(() => {
+    const keyOf = (src) => {
+      try {
+        const u = new URL(src, location.href);
+        return u.pathname.replace(/~tplv[^/]*/g, '');
+      } catch (_) {
+        return String(src).replace(/~tplv[^/]*/g, '').split('?')[0];
+      }
+    };
+    const keys = new Set();
+    document.querySelectorAll('img[src*="rc_gen_image"]').forEach((img) => {
+      const src = img.getAttribute('src') || img.currentSrc || '';
+      if (src) keys.add(keyOf(src));
+    });
+    return keys.size;
+  }).catch(() => 0);
 }
 
-/** 等待生成图片出现且数量稳定；返回最终数量（0 = 超时未出现）；任务被中止时抛出 AbortError */
-async function waitForGeneration(page, timeoutMs, taskId) {
+/** 解析预期生成张数：正整数且 1..20 合法，否则返回 0（表示未知） */
+function normalizeExpectedCount(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1) return 0;
+  return Math.min(20, Math.floor(n));
+}
+
+/** 等待生成图片出现且数量稳定（或达到预期张数）；返回最终数量（0 = 超时未出现）；任务被中止时抛出 AbortError
+ *  预期张数已知时：达到 expectedCount 即视为完成；未达标但数量长时间不增长（避免豆包只出部分图时空等）也会收手。
+ *  预期张数未知时：按"数量不再增长"判断（比旧版固定 2 次轮询更保守，等待更久一些）。 */
+async function waitForGeneration(page, timeoutMs, taskId, expectedCount) {
+  const expected = normalizeExpectedCount(expectedCount);
+  // 未达预期时允许的"不再增长"次数（2 秒一次）：已知预期 10 次（约 20 秒），未知预期 5 次（约 10 秒）
+  const maxStablePolls = expected > 0 ? 10 : 5;
   const deadline = Date.now() + timeoutMs;
   let lastCount = -1;
   let stablePolls = 0;
-  log('info', `等待生图完成（最长 ${Math.round(timeoutMs / 1000)} 秒）…`);
+  log('info', expected > 0
+    ? `等待生图完成（预期 ${expected} 张，最长 ${Math.round(timeoutMs / 1000)} 秒）…`
+    : `等待生图完成（最长 ${Math.round(timeoutMs / 1000)} 秒）…`);
   while (Date.now() < deadline) {
     throwIfAborted(taskId);
-    const count = await page.locator('img[src*="rc_gen_image"]').count().catch(() => 0);
-    if (count > 0 && count === lastCount) {
-      stablePolls += 1;
-      if (stablePolls >= 2) break;
+    const count = await countGeneratedImages(page);
+    if (count !== lastCount) {
+      log('info', expected > 0 ? `已发现 ${count}/${expected} 张生成图片` : `已发现 ${count} 张生成图片`);
+    }
+    if (count > 0) {
+      if (expected > 0 && count >= expected) {
+        log('info', `已达到预期数量（${count}/${expected}），等待 2 秒让页面稳定…`);
+        await page.waitForTimeout(2000);
+        return count;
+      }
+      if (count === lastCount) {
+        stablePolls += 1;
+        if (stablePolls >= maxStablePolls) {
+          if (expected > 0) {
+            log('warn', `生成图片数量长时间未再增长（${count}/${expected}），按已出张数继续`);
+          }
+          break;
+        }
+      } else {
+        stablePolls = 0;
+      }
     } else {
       stablePolls = 0;
     }
@@ -466,7 +513,7 @@ async function resumeGenerate(cmd) {
   if (isChatDetailUrl(url)) {
     // 已提交过：只等待生成完成，不再提交
     const timeoutMs = cmd.generation_timeout_ms || 180000;
-    const lastCount = await waitForGeneration(page, timeoutMs, cmd.task_id);
+    const lastCount = await waitForGeneration(page, timeoutMs, cmd.task_id, cmd.expected_images);
     if (lastCount > 0) {
       return { ok: true, state: 'already_generated', images_found: lastCount };
     }
@@ -500,7 +547,7 @@ async function resumeGenerate(cmd) {
           }
         }
         const timeoutMs = cmd.generation_timeout_ms || 180000;
-        const lastCount = await waitForGeneration(page, timeoutMs, cmd.task_id);
+        const lastCount = await waitForGeneration(page, timeoutMs, cmd.task_id, cmd.expected_images);
         if (lastCount > 0) {
           return { ok: true, state: 'already_generated', images_found: lastCount };
         }
@@ -742,7 +789,7 @@ async function generateImagesInner(cmd) {
 
   // 6. 等待生成完成：img[src*=rc_gen_image] 出现且数量稳定
   const genTimeoutMs = cmd.generation_timeout_ms || 180000;
-  const lastCount = await waitForGeneration(page, genTimeoutMs, cmd.task_id);
+  const lastCount = await waitForGeneration(page, genTimeoutMs, cmd.task_id, cmd.expected_images);
   if (lastCount <= 0) {
     await saveDiag('generation_timeout');
     return { ok: false, reason: 'generation_timeout', images_found: 0, message: '等待生图超时，页面未出现生成图片。' };

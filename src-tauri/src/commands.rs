@@ -281,6 +281,45 @@ pub async fn project_gen_params_set(id: i64, params: crate::models::GenParams) -
     Ok(validated)
 }
 
+/** 预期生成张数合法范围（豆包单次生成数量级有限；0/空 = 未设置） */
+fn normalize_expected_images(value: i64) -> Result<i64, String> {
+    if !(1..=20).contains(&value) {
+        return Err("预期生成张数必须在 1-20 之间".to_string());
+    }
+    Ok(value)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_expected_images_get(id: i64) -> Result<Option<i64>, String> {
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT expected_images_per_round FROM projects WHERE id = ?1",
+        [id],
+        |row| row.get::<_, Option<i64>>(0),
+    )
+    .map_err(|_| "项目不存在".to_string())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_expected_images_set(id: i64, value: Option<i64>) -> Result<Option<i64>, String> {
+    let normalized = match value {
+        Some(v) => Some(normalize_expected_images(v)?),
+        None => None,
+    };
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    let affected = conn
+        .execute(
+            "UPDATE projects SET expected_images_per_round = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![normalized, now, id],
+        )
+        .map_err(|e| e.to_string())?;
+    if affected == 0 {
+        return Err("项目不存在".to_string());
+    }
+    Ok(normalized)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn project_prompt_set(id: i64, content: String) -> Result<(), String> {
     let root = project_root_by_id(id)?;
@@ -1656,7 +1695,7 @@ pub async fn task_detail(id: i64) -> Result<Option<Task>, String> {
 pub async fn task_list_rounds(task_id: i64) -> Result<Vec<TaskRound>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, task_id, round_number, prompt_snapshot, references_json, output_dir, status, submitted_at, completed_at, success_count, failure_reason FROM task_rounds WHERE task_id = ?1 ORDER BY round_number")
+        .prepare("SELECT id, task_id, round_number, prompt_snapshot, references_json, output_dir, status, submitted_at, completed_at, success_count, failure_reason, expected_count FROM task_rounds WHERE task_id = ?1 ORDER BY round_number")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([task_id], |row| {
@@ -1672,6 +1711,7 @@ pub async fn task_list_rounds(task_id: i64) -> Result<Vec<TaskRound>, String> {
                 completed_at: row.get(8)?,
                 success_count: row.get(9)?,
                 failure_reason: row.get(10)?,
+                expected_count: row.get(11)?,
             })
         })
         .map_err(|e| e.to_string())?;

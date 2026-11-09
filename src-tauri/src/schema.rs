@@ -9,6 +9,7 @@ pub fn create_tables(conn: &Connection) -> Result<(), Box<dyn std::error::Error>
             root_path TEXT NOT NULL,
             prompt_path TEXT,
             gen_params_json TEXT,
+            expected_images_per_round INTEGER,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -63,6 +64,7 @@ pub fn create_tables(conn: &Connection) -> Result<(), Box<dyn std::error::Error>
             completed_at TEXT,
             success_count INTEGER DEFAULT 0,
             failure_reason TEXT,
+            expected_count INTEGER,
             FOREIGN KEY (task_id) REFERENCES tasks(id)
         );
         CREATE INDEX IF NOT EXISTS idx_task_rounds_task_id ON task_rounds(task_id);
@@ -153,6 +155,8 @@ fn migrate_inner(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     ensure_column(conn, "task_rounds", "output_dir", "TEXT")?;
     ensure_column(conn, "accounts", "order_index", "INTEGER")?;
     ensure_column(conn, "projects", "gen_params_json", "TEXT")?;
+    ensure_column(conn, "projects", "expected_images_per_round", "INTEGER")?;
+    ensure_column(conn, "task_rounds", "expected_count", "INTEGER")?;
     // 旧账号按 id（插入顺序）回填 order_index
     conn.execute(
         "UPDATE accounts SET order_index = id WHERE order_index IS NULL",
@@ -171,7 +175,7 @@ fn migrate_inner(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap_or(0);
     // 只提升，不回退：避免覆盖未来更高的版本号
-    let target: i64 = 3;
+    let target: i64 = 4;
     if current < target {
         conn.pragma_update(None, "user_version", target)?;
     }
@@ -236,7 +240,9 @@ mod tests {
 
         assert!(columns(&conn, "tasks").contains(&"interrupted_status".to_string()));
         assert!(columns(&conn, "task_rounds").contains(&"output_dir".to_string()));
+        assert!(columns(&conn, "task_rounds").contains(&"expected_count".to_string()));
         assert!(columns(&conn, "accounts").contains(&"order_index".to_string()));
+        assert!(columns(&conn, "projects").contains(&"expected_images_per_round".to_string()));
         // 回填：旧账号 order_index 应按 id 升序为 1..N
         let order: Vec<i64> = {
             let mut stmt = conn
@@ -248,7 +254,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(order, vec![1, 2]);
-        assert_eq!(user_version(&conn), 3);
+        assert_eq!(user_version(&conn), 4);
     }
 
     #[test]
@@ -265,6 +271,8 @@ mod tests {
         assert!(columns(&conn, "task_rounds").contains(&"output_dir".to_string()));
         assert!(columns(&conn, "accounts").contains(&"order_index".to_string()));
         assert!(columns(&conn, "projects").contains(&"gen_params_json".to_string()));
-        assert_eq!(user_version(&conn), 3);
+        assert!(columns(&conn, "projects").contains(&"expected_images_per_round".to_string()));
+        assert!(columns(&conn, "task_rounds").contains(&"expected_count".to_string()));
+        assert_eq!(user_version(&conn), 4);
     }
 }

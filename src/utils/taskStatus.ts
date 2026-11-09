@@ -14,6 +14,7 @@ export function useTaskStatusLabels(): Record<string, string> {
     downloading: t('tasks.status.downloading'),
     verifying: t('tasks.status.verifying'),
     completed: t('tasks.status.completed'),
+    partial: t('tasks.status.partial'),
     failed: t('tasks.status.failed'),
     paused: t('tasks.status.paused'),
     cancelled: t('tasks.status.cancelled'),

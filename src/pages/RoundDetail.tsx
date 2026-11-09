@@ -28,6 +28,7 @@ const STATUS_COLORS: Record<string, string> = {
   downloading: '#2563eb',
   verifying: '#2563eb',
   completed: '#16a34a',
+  partial: '#d97706',
   paused: '#ea580c',
   failed: '#dc2626',
   cancelled: '#6b7280',
@@ -148,8 +149,16 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
                   </span>
                 </td>
                 <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>
-                  {round.success_count ?? 0} /
-                  {round.success_count ?? 0 + (round.failure_reason ? 0 : 0)}
+                  {(() => {
+                    const success = round.success_count ?? 0
+                    const expected = round.expected_count
+                    const short = expected != null && success < expected
+                    return (
+                      <span style={{ color: short ? '#dc2626' : undefined, fontWeight: short ? 600 : undefined }}>
+                        {success} / {expected ?? success}
+                      </span>
+                    )
+                  })()}
                 </td>
                 <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>
                   {formatDateTime(round.submitted_at) || '-'}
@@ -198,6 +207,14 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
               <div style={{ fontSize: '16px', fontWeight: '600', color: '#1a1a1a' }}>{t('roundDetail.batchRound', { n: selectedRound.round_number ?? 0 })}</div>
               <div style={{ fontSize: '13px', color: '#6b7280' }}>
                 {STATUS_LABELS[selectedRound.status || ''] || selectedRound.status}
+                {selectedRound.expected_count != null && (
+                  <>
+                    {' · '}
+                    <span style={(selectedRound.success_count ?? 0) < selectedRound.expected_count ? { color: '#dc2626', fontWeight: 600 } : undefined}>
+                      {t('roundDetail.expectedCount', { got: selectedRound.success_count ?? 0, expected: selectedRound.expected_count })}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>

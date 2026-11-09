@@ -95,6 +95,8 @@ export interface TaskRound {
   completed_at?: string
   success_count?: number
   failure_reason?: string
+  /** 本轮预期生成张数；null/缺省 = 未知（旧数据） */
+  expected_count?: number | null
 }
 
 export interface TaskImage {
@@ -203,6 +205,14 @@ export async function projectGenParamsGet(id: number): Promise<GenParams> {
 
 export async function projectGenParamsSet(id: number, params: GenParams): Promise<GenParams> {
   return invoke('project_gen_params_set', { id, params })
+}
+
+export async function projectExpectedImagesGet(id: number): Promise<number | null> {
+  return invoke('project_expected_images_get', { id })
+}
+
+export async function projectExpectedImagesSet(id: number, value: number | null): Promise<number | null> {
+  return invoke('project_expected_images_set', { id, value })
 }
 
 export async function projectImport(name: string | null, root_path: string): Promise<Project> {
