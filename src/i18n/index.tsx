@@ -104,7 +104,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'projects.folderRoot': '根目录',
 
     'accounts.namePlaceholder': '账号名称',
-    'accounts.note': '拖动行首可调整账号顺序；任务默认按列表顺序自动轮换（未登录或已达自定义阈值的账号会被跳过），创建任务时也可显式指定账号。阈值为 0 表示不限制，阈值仅为个人管理规则。',
+    'accounts.note': '拖动行首可调整账号顺序；任务默认按列表顺序自动轮换（未登录或已达额度上限的账号会被跳过），创建任务时也可显式指定账号。阈值为 0 表示跟随设置页的「默认每日生图额度」，正数为累计总额度上限，负数表示完全不限制；额度仅为本软件的任务分配参考，实际以豆包实际为准。',
     'accounts.nameEmpty': '账号名称不能为空。请先在输入框输入账号名称（注意：如果豆包浏览器窗口获得了键盘焦点，输入内容会进入豆包页面，而不是此处）。',
     'accounts.createFailed': '创建失败: ',
     'accounts.loadFailed': '加载账号失败: ',
@@ -183,6 +183,9 @@ const translations: Record<Lang, Record<string, string>> = {
 
     'settings.projectRoot': '项目根目录',
     'settings.maxRetries': '最大重试次数',
+    'settings.defaultQuota': '默认账号每日生图额度',
+    'settings.defaultQuotaHelp': '未单独设置阈值的账号（阈值 = 0）每日（本地自然日）最多已校验生成图片的张数；0 = 不限制。实际生图额度以豆包实际为准，本设置仅用于任务分配与提醒。账号在「账号管理」单独设置的阈值（累计总额度）优先生效；阈值设为负数（如 -1）表示完全不限制、忽略本默认值。',
+    'settings.defaultQuotaUnit': '张 / 日',
     'settings.language': '界面语言',
     'settings.notify': '启用任务状态变更通知（任务开始/完成/失败/需人工处理/阈值/最大重试）',
     'settings.confirmSelection': '抽图后暂停，确认参考图后再上传',
@@ -256,6 +259,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'tasks.status.needs_manual_intervention': '需人工处理',
     'tasks.confirmNode.confirm_selection': '抽图后',
     'tasks.confirmNode.confirm_before_submit': '提交前',
+    'tasks.confirmNode.account_threshold_reached': '已达额度',
     'downloads.pending': '待下载',
     'downloads.downloading': '下载中',
     'downloads.verified': '已完成',
@@ -398,7 +402,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'projects.folderRoot': 'Root folder',
 
     'accounts.namePlaceholder': 'Account name',
-    'accounts.note': 'Drag the handle to reorder. Tasks pick accounts by list order by default (skipping logged-out or over-threshold accounts); you can also pick one explicitly per task. Threshold 0 means no limit and is only your own personal rule.',
+    'accounts.note': 'Drag the handle to reorder. Tasks pick accounts by list order by default (skipping logged-out or over-quota accounts); you can also pick one explicitly per task. Threshold 0 = follow the default daily quota in Settings, a positive number = lifetime total cap, a negative number = no limits. Quota is only this app’s scheduling aid; the real Doubao limit always prevails.',
     'accounts.nameEmpty': 'Account name cannot be empty. Type it in the input above (note: if the Doubao browser window has keyboard focus, typing goes there instead).',
     'accounts.createFailed': 'Create failed: ',
     'accounts.loadFailed': 'Failed to load accounts: ',
@@ -477,6 +481,9 @@ const translations: Record<Lang, Record<string, string>> = {
 
     'settings.projectRoot': 'Project root directory',
     'settings.maxRetries': 'Max retries',
+    'settings.defaultQuota': 'Default daily image quota per account',
+    'settings.defaultQuotaHelp': 'Max verified generated images per day (local calendar day) for accounts without their own threshold (threshold = 0); 0 = unlimited. The real Doubao limit always prevails — this is only a scheduling/reminder aid. A per-account threshold set in Accounts (lifetime total) takes precedence; a negative threshold (e.g. -1) disables all limits and ignores this default.',
+    'settings.defaultQuotaUnit': 'images / day',
     'settings.language': 'UI language',
     'settings.notify': 'Enable task notifications (started/completed/failed/manual intervention/threshold/retry limit)',
     'settings.confirmSelection': 'Pause after image selection; continue only after review',
@@ -550,6 +557,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'tasks.status.needs_manual_intervention': 'Needs manual intervention',
     'tasks.confirmNode.confirm_selection': 'After picking',
     'tasks.confirmNode.confirm_before_submit': 'Before submit',
+    'tasks.confirmNode.account_threshold_reached': 'Quota reached',
     'downloads.pending': 'Pending',
     'downloads.downloading': 'Downloading',
     'downloads.verified': 'Verified',

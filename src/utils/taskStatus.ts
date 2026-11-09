@@ -27,6 +27,7 @@ export function useConfirmNodeLabels(): Record<string, string> {
   return {
     confirm_selection: t('tasks.confirmNode.confirm_selection'),
     confirm_before_submit: t('tasks.confirmNode.confirm_before_submit'),
+    account_threshold_reached: t('tasks.confirmNode.account_threshold_reached'),
   }
 }
 

@@ -1148,12 +1148,83 @@ fn read_max_retries() -> i64 {
     3
 }
 
-/** 账号阈值的纯函数形式，便于单元测试 */
+/** 账号阈值的纯函数形式（仅测试使用，生产代码走 effective_account_limit） */
+#[cfg(test)]
 fn over_threshold(verified_images: i64, threshold: &Option<i64>) -> bool {
     match threshold {
         Some(t) => *t > 0 && verified_images >= *t,
         None => false,
     }
+}
+
+/** 账号有效额度来源：自定义总额度 > 全局每日默认 > 不限制；账号阈值为负数表示显式不限制（忽略全局默认） */
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AccountLimit {
+    /** 自定义阈值：累计 verified 图片上限（all-time） */
+    Total(i64),
+    /** 全局默认：每日 verified 图片上限（本地自然日） */
+    Daily(i64),
+}
+
+fn effective_account_limit(account_threshold: Option<i64>, global_daily: Option<i64>) -> Option<AccountLimit> {
+    let t = account_threshold.unwrap_or(0);
+    if t > 0 {
+        return Some(AccountLimit::Total(t));
+    }
+    if t < 0 {
+        return None; // 显式不限制
+    }
+    global_daily.filter(|n| *n > 0).map(AccountLimit::Daily)
+}
+
+/** 全局默认账号每日生图额度（app_settings.default_account_daily_quota，0/缺省/非法值 = 不限制） */
+fn global_daily_quota(conn: &rusqlite::Connection) -> Option<i64> {
+    conn.query_row(
+        "SELECT value FROM app_settings WHERE key = 'default_account_daily_quota'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|s| s.trim().parse::<i64>().ok())
+    .filter(|n| *n > 0)
+}
+
+/** 本地自然日对应的 UTC 范围 [start, end)，格式为 SQLite datetime() 可直接比较的形式 */
+fn local_today_utc_range() -> (String, String) {
+    use chrono::{Local, LocalResult, TimeZone, Utc};
+    let today = Local::now().date_naive();
+    let start_naive = today.and_hms_opt(0, 0, 0).expect("0:00 一定存在");
+    let end_naive = start_naive + chrono::Duration::days(1);
+    let resolve = |naive: chrono::NaiveDateTime| match Local.from_local_datetime(&naive) {
+        LocalResult::Single(d) => d,
+        LocalResult::Ambiguous(d, _) => d,
+        LocalResult::None => Local.from_local_datetime(&naive).earliest().unwrap(),
+    };
+    let fmt = |d: chrono::DateTime<Local>| d.with_timezone(&Utc).format("%Y-%m-%d %H:%M:%S").to_string();
+    (fmt(resolve(start_naive)), fmt(resolve(end_naive)))
+}
+
+/** 今日（本地自然日）已校验图片数 */
+fn account_verified_images_today(conn: &rusqlite::Connection, account_id: i64) -> i64 {
+    let (start, end) = local_today_utc_range();
+    conn.query_row(
+        "SELECT COUNT(*)
+           FROM task_images ti
+           JOIN task_rounds tr ON ti.task_round_id = tr.id
+           JOIN tasks t ON tr.task_id = t.id
+          WHERE t.account_id = ?1 AND ti.download_status = 'verified'
+            AND datetime(substr(tr.completed_at, 1, 19)) >= datetime(?2)
+            AND datetime(substr(tr.completed_at, 1, 19)) < datetime(?3)",
+        rusqlite::params![account_id, start, end],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
+}
+
+/** 账号有效额度（用于展示与判断）；None = 不限制 */
+fn account_effective_limit(conn: &rusqlite::Connection, account_id: i64) -> Option<AccountLimit> {
+    let threshold = account_image_threshold(conn, account_id).ok().flatten();
+    effective_account_limit(threshold, global_daily_quota(conn))
 }
 
 /** 轮换选择器：按顺序取 `cursor` 个位置，回绕 */
@@ -1186,11 +1257,12 @@ fn account_image_threshold(conn: &rusqlite::Connection, account_id: i64) -> Resu
     .map_err(|e| e.to_string())
 }
 
-/** 账号存在且已达到用户自定义阈值 */
+/** 账号已达到有效额度（自定义总额度 > 全局每日默认；账号阈值为负数 = 不限制） */
 fn account_over_threshold(conn: &rusqlite::Connection, account_id: i64) -> bool {
-    match account_image_threshold(conn, account_id) {
-        Ok(threshold) => over_threshold(account_verified_images(conn, account_id), &threshold),
-        Err(_) => false,
+    match account_effective_limit(conn, account_id) {
+        Some(AccountLimit::Total(t)) => account_verified_images(conn, account_id) >= t,
+        Some(AccountLimit::Daily(d)) => account_verified_images_today(conn, account_id) >= d,
+        None => false,
     }
 }
 
@@ -1224,31 +1296,30 @@ pub(crate) fn auto_pick_account_id(conn: &rusqlite::Connection) -> Result<i64, S
 fn auto_pick_account_id_tx(conn: &rusqlite::Connection) -> Result<i64, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT a.id, a.image_threshold,
-                    (SELECT COUNT(*) FROM task_images ti
-                       JOIN task_rounds tr ON ti.task_round_id = tr.id
-                       JOIN tasks t ON tr.task_id = t.id
-                      WHERE t.account_id = a.id AND ti.download_status = 'verified')
+            "SELECT a.id
                FROM accounts a
               WHERE a.status = 'logged_in'
               ORDER BY a.order_index ASC, a.id ASC",
         )
         .map_err(|e| e.to_string())?;
-    let eligible: Vec<i64> = stmt
-        .query_map([], |row| {
-            let id: i64 = row.get(0)?;
-            let threshold: Option<i64> = row.get(1)?;
-            let verified: i64 = row.get(2)?;
-            Ok((id, threshold, verified))
-        })
+    let candidate_ids: Vec<i64> = stmt
+        .query_map([], |row| row.get::<_, i64>(0))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
-        .filter(|(_, threshold, verified)| !over_threshold(*verified, threshold))
-        .map(|(id, _, _)| id)
+        .collect();
+    // 有效额度（自定义总额度 > 全局每日默认）过滤；全局默认每日额度按本地自然日统计
+    let over_ids: std::collections::HashSet<i64> = candidate_ids
+        .iter()
+        .filter(|&&id| account_over_threshold(conn, id))
+        .copied()
+        .collect();
+    let eligible: Vec<i64> = candidate_ids
+        .into_iter()
+        .filter(|id| !over_ids.contains(id))
         .collect();
 
     if eligible.is_empty() {
-        return Err("没有可用账号：全部未登录或已达用户自定义阈值，请调整阈值或登录账号".to_string());
+        return Err("没有可用账号：全部未登录或已达额度上限（自定义或默认每日额度），请调整额度或登录账号".to_string());
     }
 
     let cursor: i64 = conn
@@ -1271,16 +1342,17 @@ fn auto_pick_account_id_tx(conn: &rusqlite::Connection) -> Result<i64, String> {
     Ok(chosen)
 }
 
-/** 账号已达用户自定义阈值时暂停当前任务，返回 true 表示已暂停 */
+/** 账号已达有效额度（自定义或全局每日默认）时暂停当前任务，返回 true 表示已暂停 */
 fn pause_if_account_threshold_reached(app: &AppHandle, tid: i64, account_id: i64) -> bool {
     if let Ok(conn) = get_connection() {
+        let limit = account_effective_limit(&conn, account_id);
         if account_over_threshold(&conn, account_id) {
-            set_task_status(
-                app,
-                tid,
-                "needs_manual_intervention",
-                &format!("账号 {} 已达到用户自定义图片阈值，已暂停。可调整阈值后点「继续执行」", account_id),
-            );
+            let detail = match limit {
+                Some(AccountLimit::Total(t)) => format!("账号 {} 已达到用户自定义图片阈值（{} 张，累计），已暂停。可调整阈值后点「继续执行」", account_id, t),
+                Some(AccountLimit::Daily(d)) => format!("账号 {} 已达到今日默认生图额度（{} 张/日），已暂停。实际额度以豆包实际为准；可在设置调整默认额度，或明日继续后点「继续执行」", account_id, d),
+                None => format!("账号 {} 已达额度上限，已暂停", account_id),
+            };
+            set_task_status(app, tid, "needs_manual_intervention", &detail);
             let _ = conn.execute(
                 "UPDATE tasks SET interrupted_status = 'account_threshold_reached' WHERE id = ?1",
                 [tid],
@@ -1289,7 +1361,7 @@ fn pause_if_account_threshold_reached(app: &AppHandle, tid: i64, account_id: i64
                 &conn,
                 Some(tid),
                 "warn",
-                "账号已达到用户自定义图片阈值，任务已暂停（不是平台额度，仅用户个人管理规则）",
+                &format!("{}（非平台额度，仅本软件的任务分配参考，实际以豆包实际为准）", detail),
             );
             let _ = app.emit(
                 "account-threshold-reached",
@@ -2545,6 +2617,22 @@ mod tests {
         assert!(over_threshold(5, &Some(5)));
         assert!(over_threshold(6, &Some(5)));
         assert!(!over_threshold(4, &Some(-1))); // 非法负数视为不限制
+    }
+
+    #[test]
+    fn test_effective_account_limit_rules() {
+        // 账号自定义阈值（>0）优先生效（总额度），不受全局每日默认影响
+        assert_eq!(effective_account_limit(Some(5), Some(30)), Some(AccountLimit::Total(5)));
+        assert_eq!(effective_account_limit(Some(5), None), Some(AccountLimit::Total(5)));
+        // 阈值 = 0 / 缺省：跟随全局每日默认
+        assert_eq!(effective_account_limit(Some(0), Some(30)), Some(AccountLimit::Daily(30)));
+        assert_eq!(effective_account_limit(None, Some(30)), Some(AccountLimit::Daily(30)));
+        // 全局默认为 0 / 缺省：不限制
+        assert_eq!(effective_account_limit(Some(0), None), None);
+        assert_eq!(effective_account_limit(Some(0), Some(0)), None);
+        assert_eq!(effective_account_limit(None, None), None);
+        // 阈值为负数：显式不限制，忽略全局默认
+        assert_eq!(effective_account_limit(Some(-1), Some(30)), None);
     }
 
     #[test]

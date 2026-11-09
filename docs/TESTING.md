@@ -346,8 +346,8 @@ cargo tauri build
 | 参考图扫描与抽取 | sidecar/src/scanner.test.js | 7 | 100% |
 | 遮罩关闭逻辑 | sidecar/src/overlays.test.js | 4 | 100% |
 | DOM 兜底去重 | sidecar/src/extractor.test.js | 5 | 100% |
-| Rust 调度/迁移/命令 | src-tauri/Cargo | 40 | 100% |
-| **总计** | - | **107** | **100%** |
+| Rust 调度/迁移/命令 | src-tauri/Cargo | 41 | 100% |
+| **总计** | - | **109** | **100%** |
 
 ## 文档完整性检查
 
