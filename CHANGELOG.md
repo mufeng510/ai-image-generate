@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v1.2.0] - 2026-11-09
+
 ### 新增
 
 - 轮次详情页新增「打开目录」按钮（轮次表格行内 + 图片详情头部各一处）：直接用系统文件管理器打开该批次的生成输出目录（`output/时间戳/`）；后端新增 `round_open_output_dir` 命令（按 `task_rounds.output_dir` 打开，目录不存在时报错），界面双语（打开目录 / Open folder）
@@ -19,7 +21,8 @@
 
 ### 验证
 
-- 2026-11-08 B5 多项目队列串行压测（task #15/#16，镊子 vs 奶瓶收纳盒测试项目，各 1 轮，auto 选号）：按创建顺序串行执行（`ORDER BY created_at ASC`），#15（doubao-main）21:39 完成 8/8 verified，#16（doubao-second）被自动拣取；#16 首轮因豆包 fresh 档案推广弹窗（「下载电脑版」Radix 对话框遮挡输入框）30s locator 超时落 `needs_manual_intervention`（未提交），人工清障后「继续执行」经 fresh 探测完整重跑并完成（1/1 verified）。9/9 图 SHA-256 与 DB 一致；accounts 计数回写；rotation cursor 2→4。验收 #13 ✅、#7 ✅
+- 2026-11-08/09 验收实测（B 系列）：重启恢复（B1，验收 #15 ✅）、元数据抽查（B2，P0-7 ✅）、auto 选号轮换闭环（B3，验收 #7 ✅）、真实生图中取消（B4，task #14，验收 #14 ✅）、B5 串行压测（验收 #13 ✅）；详见 task.md 23.5 与 docs/TESTING.md
+- 2026-11-08 B5 多项目队列串行压测（task #15/#16，镊子 vs 奶瓶收纳盒测试项目，各 1 轮，auto 选号）：按创建顺序串行执行（`ORDER BY created_at ASC`），#15（doubao-main）21:39 完成 8/8 verified，#16（doubao-second）被自动拣取；#16 首轮因豆包 fresh 档案推广弹窗（「下载电脑版」Radix 对话框遮挡输入框）30s locator 超时落 `needs_manual_intervention`（未提交），人工清障后「继续执行」经 fresh 探测完整重跑并完成（1/1 verified）。9/9 图 SHA-256 与 DB 一致；accounts 计数回写；rotation cursor 2→4
 - 新增 `sidecar/src/overlays.test.js`（headless Chromium 离线夹具，4 项：识别/关闭推广弹窗、晚于 hydration 出现弹窗的关闭、干净页不误判/快速返回），已接入 `scripts/run-tests.ps1`
 - 2026-11-09 B6 断网注入实测（task #17，镊子，auto→doubao-main，cursor 4→5）：提交后切断网络 → sidecar 180s 判 `generation_timeout` → 任务落 `needs_manual_intervention`（本次对齐后的新分类；此前会落 `failed`）、通知中心 kind=`needs_manual_intervention`；`submit_count` 不增加、无重复提交；恢复网络「继续执行」→ resume 探测 `chat/<id>` 已生成 → 提取→下载→校验 → completed。验收 #16 ✅。本轮另发现并修复 DOM 兜底去重重复下载（10 张→去重后高清优先）与轮次详情页图片不显示两处问题；#17 的 5 张缩略图及记录按用户确认删除
 
