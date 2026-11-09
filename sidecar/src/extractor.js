@@ -35,6 +35,38 @@ function isUiAsset(url) {
   return false;
 }
 
+/** 生成图 URL 的文件标识：路径中的底图 ID（去掉 ~tplv... 缩放后缀、忽略 origin/查询串）。
+ *  同一底图的缩略图与高清图可能落在不同 CDN 域（p11/p3/p6/p26），且查询签名不同，
+ *  只有底图路径本身是稳定标识。 */
+function generatedImageKey(url) {
+  try {
+    const u = new URL(url);
+    return u.pathname.replace(/~tplv[^/]*/g, '');
+  } catch (_) {
+    return url.replace(/~tplv[^/]*/g, '').replace(/\?.*$/, '');
+  }
+}
+
+/**
+ * DOM 兜底去重：同一文件标识只保留一张，高清优先（cgen > cthumb）。
+ * 豆包页面为每张生成图渲染两个 <img>（src 与 currentSrc/srcSet 指向不同缩放版本），
+ * 直接按 src 计数会把缩略图与高清图各算一份。
+ */
+function dedupeGeneratedImages(images) {
+  const rank = (url) => (/cthumb/i.test(url || '') ? 1 : 0);
+  const best = new Map();
+  for (const img of images) {
+    const key = generatedImageKey(img.url);
+    const cur = best.get(key);
+    if (!cur) {
+      best.set(key, img);
+      continue;
+    }
+    if (rank(img.url) < rank(cur.url)) best.set(key, img);
+  }
+  return Array.from(best.values());
+}
+
 /** URL 身份（去掉查询参数和片段，用于去重） */
 function urlIdentity(url) {
   try {
@@ -76,14 +108,7 @@ function parseImageOriRaws(html) {
     if (/\.webp(?:[?~]|$)/i.test(url)) return 3;
     return 4;
   };
-  const keyOf = (url) => {
-    try {
-      const u = new URL(url);
-      return u.origin + u.pathname.replace(/~tplv[^/]*/g, '');
-    } catch (_) {
-      return url.replace(/~tplv[^/]*/g, '');
-    }
-  };
+  const keyOf = (url) => generatedImageKey(url);
 
   for (const url of decoded) {
     if (!url.includes('/rc_gen_image/') || !url.includes('image_raw')) continue;
@@ -217,4 +242,6 @@ module.exports = {
   extFromUrl,
   extractImagesFromDom,
   extractAndSaveImages,
+  generatedImageKey,
+  dedupeGeneratedImages,
 };

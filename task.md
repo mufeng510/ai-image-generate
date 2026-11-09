@@ -1435,7 +1435,7 @@ README 中说明：
 | 13 | 能管理多个项目的任务队列 | ✅（2026-11-08 B5：镊子 #15 与奶瓶收纳盒 #16 各 1 轮入队，按创建顺序串行执行、无浏览器并发占用；两轮均完成；输出目录/账号归属正确；9/9 图 verified 且 SHA-256 与 DB 一致） |
 | 14 | 能暂停、继续、取消任务 | ✅（暂停+继续：#10，生成等待中暂停后 resume 无重复提交；阈值暂停后取消：#11；**真实生图中取消：#14**（doubao-second，提交后生成等待中点「取消」20s 内干净中止、无重复提交、任务落 cancelled、日志记录）） |
 | 15 | 软件关闭后能安全恢复未完成任务 | ✅（2026-11-08 本机重启验证：重启后未完成任务不自动执行，#8 显示「需人工处理 上次： 提交前」，原状态可见；手动「继续执行」即恢复入口） |
-| 16 | 不会因为状态不明而重复提交 | 🟡（生成等待中暂停→继续已实测无重复提交（#10）；超时/状态不明注入场景未实测） |
+| 16 | 不会因为状态不明而重复提交 | ✅（2026-11-09 B6：生成等待中断网注入（task #17）——sidecar 180s 判 `generation_timeout`，任务落 `needs_manual_intervention`（本次将该分类从 `failed` 对齐为 `needs_manual_intervention`）、通知 kind=`needs_manual_intervention`；`submit_count` 不增加（未确认提交不计数）、全程无重复提交；恢复网络「继续执行」→ resume 探测 `chat/<id>` 已生成 → 提取→下载→校验→completed） |
 | 17 | 能处理登录失效、验证码和网页结构变化 | 🟡（已实现登录失效/验证码/结构变化检测，未做真实故障注入） |
 | 18 | 能保留错误截图和诊断信息 | 🟡（已实现 URL/截图保存，未在真实失败场景复现验证） |
 | 19 | 能查看和导出完整执行日志 | 🟡（筛选/导出 UI 与命令已接线并通过 GUI 渲染验证，未实际写出 CSV 导出文件对账） |
@@ -1448,6 +1448,20 @@ README 中说明：
 - `docs/TECHNICAL_VALIDATION.md` 的 Phase 0 结论基于源码分析，登录后环节的实测记录见 `docs/TESTING.md`；两者应结合阅读。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-09（B6 断网注入 + 两处修复 + #17 清理）
+
+**断网注入（task #17，镊子 project 2，auto→doubao-main，cursor 4→5）：** 提交后用户切断网络（00:41:25 提交），sidecar 180s 判 `generation_timeout` → 00:44:52 round `failed`、任务 `needs_manual_intervention`、通知中心 kind=`needs_manual_intervention`；`submit_count` 保持 3（未确认提交不计数）、无重复提交；恢复网络后「继续执行」→ resume 探测已生成图 → 提取→下载→校验 → completed（1/1 轮）。验收 #16 ✅。
+
+**修复 1（Rust，两处超时路径）：** 「提交后等待生成超时」分类由 `failed` 改为 `needs_manual_intervention`（`classify_gen_failure` 拆分 `generation_timeout`；`wait_result` Timeout 两条路径同步），`goto_failed` 保持 `failed`。`cargo test` 40/40 通过。
+
+**修复 2（sidecar，用户反馈）：** 输出 10 张（5 缩略图 `cthumb_*` + 5 高清图 `cgen_*`，同底图画面相同、跨 CDN 域）。根因：DOM 兜底提取去重正则无法匹配实际 URL 形态；`image_ori_raw` 本轮解析为 0。新增 `generatedImageKey`/`dedupeGeneratedImages`（底图路径为键、忽略 CDN 域/签名/`~tplv`，cgen 优先），新增 `sidecar/src/extractor.test.js`（#17 实测 URL fixture，5/5 通过），接入 `scripts/run-tests.ps1`。历史所有 DOM 兜底轮次均存在此重复。
+
+**修复 3（前端）：** `RoundDetail.tsx` 图片显示改用 `convertFileSrc()`（原 `file://` 被 Tauri CSP 拦截）。
+
+**#17 清理（用户确认后）：** 删除 5 张缩略图文件（001/003/005/007/009）+ 5 行 `task_images`；`task_rounds.success_count` 10→5；`task.json` 同步移除；备份于 `%TEMP%\opencode\task17_thumb_backup.json` / `task17_taskjson_backup.json`。
+
+**观察：** `image_ori_raw`（无水印原图）在真实断网+刷新场景未命中，落 DOM 兜底；`existing generated_images 探测`（resume 路径）按 `<img>` 计数，不受重复 rendition 影响。
 
 ### 2026-11-08（推广弹窗遮罩自动关闭落地 + dev watch 修复）
 

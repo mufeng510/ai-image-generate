@@ -262,6 +262,28 @@
 | 执行日志与 UI 原因展示 | ✅「账号 1 已达到用户自定义图片阈值，已暂停」 |
 | 测后清理 | ✅ 阈值恢复 0；任务点击取消 → cancelled |
 
+### 2026-11-09 B6：wait_result 超时/状态不明注入实测（task #17）+ 两处修复
+
+环境：dev 实例（HEAD `cc3a077` + 本地未提交修复）；镊子项目（id=2，参考图池已耗尽、允许重复抽取）auto 选号 → doubao-main（cursor 4→5），1 轮。注入方式：提交后用户切断网络（Wi-Fi 断开）约 3.5 分钟，随后恢复网络；时间均为本地（UTC+8），DB `created_at` 为 UTC。
+
+| 测试项 | 预期 | 结果 |
+|---|---|---|
+| 注入时机 | 提交后的生成等待中断网 | ✅ 00:41:25 提交（日志「已提交，等待生成完成」），随即断网 |
+| 超时判定 | sidecar 180s 后判 `generation_timeout` | ✅ 00:44:52（≈207s）→ round 16 `failed`，`failure_reason=generation_timeout` |
+| 任务状态 | 落 `needs_manual_intervention`（本次对齐的新分类）而非 `failed` | ✅ 任务 #17 → `needs_manual_intervention`；通知中心 kind=`needs_manual_intervention`（id=30） |
+| 不重复提交 | `submit_count` 不增加、无新的发送动作 | ✅ doubao-main `submit_count` 保持 3（未确认提交按设计不计数）；日志无第二次发送 |
+| 恢复路径 | 恢复网络 →「继续执行」→ resume 探测 `chat/<id>` → 已生成 → 提取→下载→校验 | ✅ 00:47:57 继续执行 → `already_generated`（探测到已生成图）→ 10/10 verified → completed；全程无重复提交 |
+| 轮次产物 | cgen 高清图 SHA-256 一致 | ✅ 5 张 cgen 图 `verified`（002/004/006/008/010.png） |
+
+**事故与修复（同轮发现，用户在场反馈）：**
+- 原实现将「提交后等待生成超时」分类为 `failed`（`classify_gen_failure` 的 `generation_timeout → ("failed", "网络或生成超时")`，另两条 `wait_result` Timeout 路径同），与验收 #16「状态不明 → 需人工处理」预期不符；已改为 `needs_manual_intervention`（`goto_failed` 保持 `failed`，提交前失败语义不变），`cargo test` 40/40 通过。这也是 B11 确定性测试的前提。
+- **输出 10 张（画面相同、大小悬殊）**：本轮走了 DOM 兜底提取（`image_ori_raw` 解析为 0）。豆包页面为每张生成图渲染两个 `<img>`（src / currentSrc 分别指向 `cthumb_*` 缩略图与 `cgen_*` 高清图，且落在不同 CDN 域），DOM 兜底的去重正则（要求路径含 `:`）无法匹配，缩略图与原图各算一张 → 5 张缩略图（≈130–210KB）+ 5 张高清图（≈1.8–2.7MB）。历史所有走 DOM 兜底的轮次均存在该重复。已修复：`extractor.js` 新增 `generatedImageKey`/`dedupeGeneratedImages`（按底图路径为键、忽略 CDN 域/查询签名/`~tplv` 缩放后缀，同键只保留一张且 cgen 高清图优先），`index.js` DOM 兜底改用该去重；新增离线测试 `sidecar/src/extractor.test.js`（5/5 通过，fixture 即 #17 实测 URL），已接入 `scripts/run-tests.ps1`。
+- **软件内图片不显示**：`RoundDetail.tsx` 用 `` `file://${path}` `` 加载本地图，被 Tauri CSP 拦截（img-src 仅放行 asset:/http://asset.localhost）；已改为 `convertFileSrc(img.saved_path)`（与 Projects 页一致）。
+- #17 本轮的 5 张缩略图（001/003/005/007/009）及对应 5 行 `task_images` 已按用户确认删除，轮次 `success_count` 10→5、`task.json` 同步移除这 5 条，备份见 `%TEMP%\opencode\task17_thumb_backup.json` 与 `task17_taskjson_backup.json`；保留的 5 张 cgen 高清图完好（SHA-256 未重算，删除前已记录于备份）。
+- 注：`image_ori_raw`（无水印原图）路径在真实环境本次未命中（断网→刷新后页面未内嵌该 JSON），落入 DOM 兜底；无水印原图的可用性仍待真实页面观察（P0 未变）。
+
+**验收：** 23.3 #16 ✅；B6 todo 闭合。
+
 ### 手动测试步骤
 
 ```bash
@@ -288,6 +310,7 @@ cd sidecar
 node src/downloader.js
 node src/pool.js
 node src/scanner.test.js
+node src/extractor.test.js
 cd ..
 
 # 6b. 一键运行全部离线检查（不启动应用/不触发浏览器）
@@ -322,8 +345,9 @@ cargo tauri build
 | 持久化随机池 | sidecar/src/pool.js | 5 | 100% |
 | 参考图扫描与抽取 | sidecar/src/scanner.test.js | 7 | 100% |
 | 遮罩关闭逻辑 | sidecar/src/overlays.test.js | 4 | 100% |
+| DOM 兜底去重 | sidecar/src/extractor.test.js | 5 | 100% |
 | Rust 调度/迁移/命令 | src-tauri/Cargo | 40 | 100% |
-| **总计** | - | **98** | **100%** |
+| **总计** | - | **107** | **100%** |
 
 ## 文档完整性检查
 
@@ -342,5 +366,5 @@ cargo tauri build
 
 ---
 
-*测试报告更新时间：2026-11-08（含 3 轮多轮 E2E + 暂停/继续 + 阈值暂停 + B1/B3/B4/B5 实测）*
-*适用版本：v1.0.0*
+*测试报告更新时间：2026-11-09（含 B6 断网注入实测 + DOM 兜底去重离线测试 + RoundDetail asset 修复）*
+*适用版本：v1.1.0*

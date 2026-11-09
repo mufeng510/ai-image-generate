@@ -5,12 +5,16 @@
 ### 修复
 
 - 修复 fresh 浏览器档案首次访问豆包弹出「下载电脑版」推广弹窗（Radix `role=dialog`，全视口固定定位）拦截提示词输入框、导致 `locator.click` 30s 超时的问题（task #16 首轮失败）：遮罩关闭逻辑抽取为 `sidecar/src/overlays.js`；新增 `waitAndDismissOverlays`——持续关闭并轮询直到连续 `stableMs` 内页面无可见遮罩（覆盖弹窗晚于 hydration 出现的时序）；应用在打开新对话页、输入提示词前、提示词已输入后均改为该等待式关闭；输入框点击增加「关闭遮罩后重试一次」兜底（与发送按钮一致）；Radix 关闭按钮选择器补充 `[data-slot="dialog-close"]` / `[data-slot="alert-dialog-close"]`
+- 修复「提交后等待生成超时」落 `failed` 与验收预期不符的问题（验收 #16）：页面状态未知时任务现落 `needs_manual_intervention`（`classify_gen_failure` 拆分 `generation_timeout`、两条 `wait_result` 超时路径同步修改），恢复路径统一由「继续执行」页面探测，绝不自动重复提交；`goto_failed` 保持 `failed`（提交前失败）
+- 修复 DOM 兜底提取把同一底图的缩略图（`cthumb_*`）与高清图（`cgen_*`）各算一张、导致每轮多下载一倍图片且缩略图与高清图重复的问题（task #17 输出 10 张、画面相同）：去重改按底图路径为键（忽略 CDN 域/查询签名/`~tplv` 缩放后缀），同键只保留一张、cgen 高清图优先；新增 `sidecar/src/extractor.test.js`（5 项，含 #17 实测 URL fixture）并接入 `scripts/run-tests.ps1`
+- 修复软件内（轮次详情页）生成图片不显示的问题：`RoundDetail.tsx` 改用 `convertFileSrc()` 加载本地图（原 `file://` 被 Tauri CSP 的 img-src 拦截，CSP 仅放行 asset:/http://asset.localhost）
 - 修复 dev 模式 vite watch 误扫 scratch 构建目录 `target3/` 导致启动崩溃（EBUSY）：`vite.config.ts` watch.ignored 增加 `**/target3/**`，`.gitignore` 忽略 `target3/`
 
 ### 验证
 
 - 2026-11-08 B5 多项目队列串行压测（task #15/#16，镊子 vs 奶瓶收纳盒测试项目，各 1 轮，auto 选号）：按创建顺序串行执行（`ORDER BY created_at ASC`），#15（doubao-main）21:39 完成 8/8 verified，#16（doubao-second）被自动拣取；#16 首轮因豆包 fresh 档案推广弹窗（「下载电脑版」Radix 对话框遮挡输入框）30s locator 超时落 `needs_manual_intervention`（未提交），人工清障后「继续执行」经 fresh 探测完整重跑并完成（1/1 verified）。9/9 图 SHA-256 与 DB 一致；accounts 计数回写；rotation cursor 2→4。验收 #13 ✅、#7 ✅
 - 新增 `sidecar/src/overlays.test.js`（headless Chromium 离线夹具，4 项：识别/关闭推广弹窗、晚于 hydration 出现弹窗的关闭、干净页不误判/快速返回），已接入 `scripts/run-tests.ps1`
+- 2026-11-09 B6 断网注入实测（task #17，镊子，auto→doubao-main，cursor 4→5）：提交后切断网络 → sidecar 180s 判 `generation_timeout` → 任务落 `needs_manual_intervention`（本次对齐后的新分类；此前会落 `failed`）、通知中心 kind=`needs_manual_intervention`；`submit_count` 不增加、无重复提交；恢复网络「继续执行」→ resume 探测 `chat/<id>` 已生成 → 提取→下载→校验 → completed。验收 #16 ✅。本轮另发现并修复 DOM 兜底去重重复下载（10 张→去重后高清优先）与轮次详情页图片不显示两处问题；#17 的 5 张缩略图及记录按用户确认删除
 
 ## [v1.1.0] - 2026-11-08
 

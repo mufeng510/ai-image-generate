@@ -967,7 +967,9 @@ fn classify_gen_failure(reason: &str) -> (&'static str, &'static str) {
         "upload_input_not_found" | "submit_button_not_found" | "textbox_not_found" | "submit_click_failed" => {
             ("needs_manual_intervention", "未找到页面关键元素或点击被遮挡，请关闭页面中的遮罩后继续")
         }
-        "goto_failed" | "generation_timeout" => ("failed", "网络或生成超时"),
+        // 提交后等待生成超时 = 页面状态未知：停在需人工处理（绝不自动重复提交），恢复路径由「继续执行」探测页面
+        "goto_failed" => ("failed", "网络或生成超时"),
+        "generation_timeout" => ("needs_manual_intervention", "已提交但等待生图超时，页面状态未知；请检查浏览器后点「继续执行」"),
         "no_reference_images" | "empty_prompt" => ("failed", "缺少参考图片或提示词"),
         _ => ("needs_manual_intervention", "生图失败，需人工确认"),
     }
@@ -1583,7 +1585,7 @@ async fn run_single_round(
                     rusqlite::params![Utc::now().to_rfc3339(), round_id],
                 );
             }
-            set_task_status(app, tid, "failed", "等待生图超时（已提交，可能仍在生成）");
+            set_task_status(app, tid, "needs_manual_intervention", "等待生图超时（已提交，可能仍在生成），请检查浏览器后点「继续执行」");
             return Err(());
         }
         WaitOutcome::Interrupted => {
@@ -2255,7 +2257,7 @@ async fn resume_selection_round(
         WaitOutcome::Result(v) => v,
         WaitOutcome::Timeout => {
             clear_interrupted_status(tid);
-            set_task_status(app, tid, "failed", "等待生图超时（已提交，可能仍在生成）");
+            set_task_status(app, tid, "needs_manual_intervention", "等待生图超时（已提交，可能仍在生成），请检查浏览器后点「继续执行」");
             return Ok(());
         }
         WaitOutcome::Interrupted => {

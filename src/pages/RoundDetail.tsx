@@ -6,6 +6,7 @@
  */
 
 import { useState, useEffect } from 'react'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import {
   taskListRounds,
   taskListImages,
@@ -191,7 +192,7 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
                     <div style={{ position: 'relative', width: '100%', aspectRatio: '1', background: '#f3f4f6', overflow: 'hidden' }}>
                       {img.saved_path ? (
                         <img
-                          src={`file://${img.saved_path}`}
+                          src={convertFileSrc(img.saved_path)}
                           alt={t('roundDetail.altImage', { n: img.image_index ?? 0 })}
                           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                           onError={(e) => {

@@ -305,7 +305,7 @@ async function probeAndExtract(cmd) {
   log('info', `页面探测: url=${probe.url} 文件输入=${probe.fileInputs} 输入框=${probe.textboxes} 疑似已登录=${probe.likelyLoggedIn}`);
 
   // 1. 优先抽取无水印原图（image_ori_raw，内嵌于页面 JSON 中）
-  const { parseImageOriRaws, extractImagesFromDom } = require('./extractor');
+  const { parseImageOriRaws, extractImagesFromDom, dedupeGeneratedImages } = require('./extractor');
   let rawImages = [];
   try {
     const html = await page.content();
@@ -315,20 +315,14 @@ async function probeAndExtract(cmd) {
     log('warn', `image_ori_raw 解析失败: ${err.message}`);
   }
 
-  // 2. 兜底：DOM 扫描 /rc_gen_image/（大图优先），用于无内嵌 JSON 的情况
+  // 2. 兜底：DOM 扫描 /rc_gen_image/（去重 + 高清优先），用于无内嵌 JSON 的情况
   if (rawImages.length === 0) {
     try {
       const dom = await extractImagesFromDom(page);
       const gen = dom.filter((img) => img.url.includes('/rc_gen_image/'));
-      // 同一文件标识去重，保留 URL（都是同一代图，任取一张即可）
-      const seen = new Set();
-      rawImages = gen.filter((img) => {
-        const key = img.identity.replace(/-[^/]*:[^/]*\.(png|jpeg|jpg|heic|webp).*/i, '');
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      log('info', `DOM 兜底提取到 ${rawImages.length} 张生成图`);
+      // 同一底图有缩略图（cthumb）与高清图（cgen）两种 rendition：按文件标识去重，高清优先
+      rawImages = dedupeGeneratedImages(gen);
+      log('info', `DOM 兜底提取到 ${rawImages.length} 张生成图（已按文件标识去重，高清优先）`);
     } catch (err) {
       log('warn', `DOM 兜底提取失败: ${err.message}`);
     }
