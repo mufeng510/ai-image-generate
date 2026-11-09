@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 验证
+
+- 应用更新端到端闭环验证（B13，2026-11-09，用户授权发布 v1.3.0）：CI Release run 全绿（20m17s），GitHub Release v1.3.0 发布（NSIS 247MB+sig、MSI 343MB+sig、latest.json 三目标）；本机装机版（1.0.0，与 dev 共享 app.db）→ 设置页「检查更新」发现 1.3.0 →「下载并安装」→ 安装程序静默完成 → 应用自动重启；设置页显示 1.3.0；更新前后数据快照逐项一致（app.db 294912 B、tasks 20、task_images verified 41、execution_logs 236、accounts 及计数/状态、cursor=6、账号目录 7506 文件/563 MB、输出根 208 文件/148 MB 全一致）。验收 #21 ✅。
+
 ## [v1.3.0] - 2026-11-09
 
 ### 新增

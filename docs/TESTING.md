@@ -286,6 +286,22 @@
 
 **验收：** 23.3 #16 ✅；B6 todo 闭合。
 
+### 2026-11-09 B13：应用更新端到端闭环验证（v1.3.0 发布，用户授权）
+
+| 测试项 | 预期 | 结果 |
+|---|---|---|
+| bump + tag 一致 | package.json/lock、Cargo.toml/lock、tag v1.3.0 同版本 | ✅ 四处 + tauri.conf.json（无 version 字段，Tauri 用 Cargo.toml） |
+| CI release.yml | 构建并发 Release + latest.json | ✅ run 42572883004 全绿 20m17s；Release v1.3.0 2026-11-09T06:44:51Z（NSIS 247MB+sig、MSI 343MB+sig、latest.json 三目标） |
+| 装机版「检查更新」发现新版 | 1.0.0 → 发现 1.3.0 | ✅ 原生弹窗显示 1.3.0 + release notes；GUI 原生对话框按钮 open-computer-use 点不动，由用户点「确定」（updater endpoint + latest.json 解析已证） |
+| 「下载并安装」走完整安装 | 下载→验签→安装→重启 | ✅ 「安装中…」约 4 分钟 → 应用退出 → 原生安装程序完成 → exe 1.0.0→1.3.0（LastWriteTime 06:35:16）→ 应用自动重启 |
+| 签名验证 | updater 公钥验证安装包 | ✅ 安装包成功安装（updater 验签通过，否则不会进入安装）；latest.json sig len 464 |
+| 版本显示 | 软件版本 = 新版 | ✅ 设置页「软件版本 1.3.0」；仪表盘/设置页渲染正常（含 1.3.0 新 UI） |
+| SQLite 数据无损 | 表行数/账号/设置一致 | ✅ 更新前后快照逐项一致（app.db 294912 B；accounts 3 行计数/状态/cursor=6；execution_logs 236；notifications 8；task_images verified 41） |
+| 项目图片无损 | 输出目录不变 | ✅ 208 文件 / 155,150,716 B 一致 |
+| 账号浏览器数据无损 | accounts 目录不变 | ✅ 7506 文件 / 563,570,587 B 完全一致（doubao-main/second/b7-test 原登录态保留） |
+
+**验收：** 23.3 #21 ✅；B13 todo 闭合。附注：dev 实例按用户要求关闭；装机版与 dev 共享 app.db，位置未变。
+
 ### 2026-11-09 B12：Playwright Trace 真实任务验证（少量额度，task #20）
 
 环境：dev 实例（HEAD `365b477`）；设置页「启用 Playwright Trace」开关开启（`app_settings.playwright_trace=true`）→ 任务队列创建「项目 #2 镊子」1 轮任务（task #20，auto 选号 → doubao-b7-test id=3）→「开始」。任务 06:08:08 → 06:10:19 完成（约 2 分 20 秒），5/5 下载成功、`download_status='verified'`、SHA-256 5/5 与库中一致。验证后关闭开关（`playwright_trace=false`，恢复默认）。
@@ -455,5 +471,5 @@ cargo tauri build
 
 ---
 
-*测试报告更新时间：2026-11-09（含 B6 断网注入实测 + B7 登录失效故障注入实测 + B8 验证码检测实现与对照 + B9 失败诊断复现验证 + B10 日志 CSV 导出对账 + B11 wait_result 计时路径确定性测试 + B12 Playwright Trace 真实任务验证 + DOM 兜底去重离线测试 + RoundDetail asset 修复）*
+*测试报告更新时间：2026-11-09（含 B6 断网注入实测 + B7 登录失效故障注入实测 + B8 验证码检测实现与对照 + B9 失败诊断复现验证 + B10 日志 CSV 导出对账 + B11 wait_result 计时路径确定性测试 + B12 Playwright Trace 真实任务验证 + B13 应用更新端到端闭环验证 + DOM 兜底去重离线测试 + RoundDetail asset 修复）*
 *适用版本：v1.1.0*

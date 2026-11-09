@@ -1440,7 +1440,7 @@ README 中说明：
 | 18 | 能保留错误截图和诊断信息 | ✅（2026-11-09 B9：真实失败场景复核——B7 login_required（task #18）与 B6 generation_timeout（task #17）诊断三件齐全（截图+HTML+`diagnostics/*.json`{tag,url,timestamp}，url 含具体 chat 页地址）；extract 失败诊断路径确认同写 png+html+json（磁盘唯一历史实例 2026-11-06 为 c9558bd「失败诊断」之前产物，无 json，非回归）；执行日志 0/225、通知 0/6、诊断 HTML 无 Cookie/密码/token 实值；失败轮次目录保留 prompt.txt+references.json） |
 | 19 | 能查看和导出完整执行日志 | ✅（2026-11-09 B10：GUI 导出全量 225 行 + 筛选 task=18 导出 21 行，均经 Python csv 解析并与 DB 逐单元格核对 0 不符；UTF-8 BOM 中文正常（Excel COM 实测：A1=时间、E3 中文整句一致、226×5）；含半角逗号/引号/换行的 2 条巨型日志原样往返；公式注入 `= + - @` 前缀 `'` 中和（新增 Rust 单元测试，45/45）；5000 行上限为前端 buildFilter(5000)+后端 `clamp(1, 5000)`，225 行环境无法触发阈值，仅按代码与界面文案核对） |
 | 20 | 支持中文和英文 | ✅ |
-| 21 | 支持检查和安装软件更新 | 🟡（更新/安装流程已实现并通过静态检查，未用真实新版本端到端验证） |
+| 21 | 支持检查和安装软件更新 | ✅（2026-11-09 B13：装机版 1.0.0 → 设置页「检查更新」提示 1.3.0 →「下载并安装」→ 原生安装程序自动安装（exe 1.0.0→1.3.0，LastWriteTime 06:35:16）→ 自动重启 → 设置页「软件版本」显示 1.3.0；更新前后数据快照逐项一致（app.db 294912 B、projects 2/tasks 20/task_rounds 20/task_images 41(verified 41)/execution_logs 236/notifications 8/image_pool_records 100；accounts 3 行计数与状态一致；cursor=6；账号目录 7506 文件/563,570,587 B；输出根 208 文件/155,150,716 B）；release v1.3.0（NSIS 247MB+sig、MSI 343MB+sig、latest.json）经 GitHub Release 发布，装机版 updater 按 releases/latest 发现并验签安装） |
 | 22 | 文档齐全 | ✅ |
 
 ## 23.4 备注
@@ -1448,6 +1448,20 @@ README 中说明：
 - `docs/TECHNICAL_VALIDATION.md` 的 Phase 0 结论基于源码分析，登录后环节的实测记录见 `docs/TESTING.md`；两者应结合阅读。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-09（B13 应用更新端到端验证，v1.3.0 发布闭环，用户授权）
+
+**发布：** bump 1.3.0（package.json/package-lock.json/Cargo.toml/Cargo.lock + release.yml `releaseBody` 同步 + CHANGELOG `[v1.3.0] - 2026-11-09`）→ commit `b7bce1f` → 推送 `main`（含此前未推送的 B8–B12 共 5 个提交，6a06b5f..b7bce1f）→ 推送 tag `v1.3.0` → CI run `42572883004`（windows-latest，**20m17s 全绿**，仅 Node.js 20 deprecation 警告）→ GitHub Release `v1.3.0` 发布（2026-11-09T06:44:51Z）：`doubao-batch-image-generate_1.3.0_x64-setup.exe`(247MB)+sig、`_x64_en-US.msi`(343MB)+sig、`latest.json`（windows-x86_64/nsis/msi 三目标，sig len 464，version=1.3.0）。
+
+**装机版更新闭环（本机 Win10 IoT LTSC，装机版 1.0.0，app.db 与 dev 共享）：**
+- 启动装机版 → 仪表盘数据正常（20 任务/41 图；共享 app.db）→ 设置页「软件版本 1.0.0」。
+- 「检查更新」→ 原生弹窗「发现新版本 1.3.0」+ 完整 releaseBody（GUI 原生对话框，open-computer-use 点不动原生按钮，由用户点「确定」关闭；弹窗内容显示即证 updater endpoint + latest.json 解析正常）。
+- 「下载并安装」→ 按钮变「安装中…」→ 约 4 分钟后应用自动退出 → **原生安装程序静默完成（exe 1.0.0→1.3.0：LastWriteTime 2026-11-09 06:35:16，FileVersion/ProductVersion = 1.3.0）→ 应用自动重启（PID 8772）**。
+- 重启后设置页「软件版本 **1.3.0**」；仪表盘/设置页渲染正常（含 v1.3.0 新 UI：默认每日额度、Trace 开关）。
+- **数据无损对账**（更新前 `.tmp\b13_snapshot.txt` vs 更新后 `.tmp\b13_snapshot_after.txt`）：app.db 294912 B 不变；所有表行数一致（accounts 3/projects 2/tasks 20/task_rounds 20/task_images 41·verified 41/execution_logs 236/notifications 8/image_pool_records 100）；accounts 计数与状态一致；`account_rotation_cursor=6`、`playwright_trace=false`；accounts 浏览器目录 7506 文件/563,570,587 B 完全一致；输出根 208 文件/155,150,716 B 完全一致。
+- 附注：dev 实例（target\debug）按用户要求已关闭；vite dev server 随 tauri dev 退出。装机版数据目录为 `%LOCALAPPDATA%\doubao-batch-image-generate`（与 dev 共享 app.db，位置不变，更新未迁移数据目录）。
+
+**验收：** 23.3 #21 ✅；B13 todo 闭合。整个 B 系列（B1–B13）至此完成。
 
 ### 2026-11-09（B12 Playwright Trace 真实任务验证，少量额度）
 
