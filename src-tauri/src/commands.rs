@@ -1951,17 +1951,10 @@ fn csv_cell(value: &str) -> String {
     }
 }
 
-#[tauri::command(rename_all = "snake_case")]
-pub async fn logs_export(filter: LogFilterPayload, file_path: String) -> Result<i64, String> {
-    let trimmed = file_path.trim();
-    if trimmed.is_empty() {
-        return Err("导出路径不能为空".to_string());
-    }
-    let conn = get_connection().map_err(|e| e.to_string())?;
-    let rows = logs_query_with_conn(&conn, &filter)?;
-    // BOM 让 Excel 正确识别 UTF-8 中文
+/** 渲染日志为 CSV：BOM + 表头（Excel 正确识别 UTF-8 中文）+ 每行一条，字段按 csv_cell 规则转义 */
+fn render_logs_csv(rows: &[LogEntry]) -> String {
     let mut out = String::from("\u{FEFF}时间,级别,任务ID,任务名称,消息\n");
-    for row in &rows {
+    for row in rows {
         out.push_str(&format!(
             "{},{},{},{},{}\n",
             csv_cell(row.created_at.as_deref().unwrap_or("")),
@@ -1971,6 +1964,18 @@ pub async fn logs_export(filter: LogFilterPayload, file_path: String) -> Result<
             csv_cell(&row.message)
         ));
     }
+    out
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn logs_export(filter: LogFilterPayload, file_path: String) -> Result<i64, String> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() {
+        return Err("导出路径不能为空".to_string());
+    }
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let rows = logs_query_with_conn(&conn, &filter)?;
+    let out = render_logs_csv(&rows);
     let parent = std::path::Path::new(trimmed)
         .parent()
         .map(|p| p.to_path_buf())
@@ -2088,7 +2093,7 @@ pub async fn notification_clear() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{make_task_name, csv_field, csv_cell};
+    use super::{make_task_name, csv_field, csv_cell, render_logs_csv, LogEntry};
 
     #[test]
     fn csv_field_escapes_comma_quote_and_newline() {
@@ -2121,5 +2126,71 @@ mod tests {
     fn make_task_name_empty_falls_back_to_default() {
         let name = make_task_name("   ");
         assert!(name.starts_with("任务-"));
+    }
+
+    #[test]
+    fn render_logs_csv_writes_bom_and_escapes_rows() {
+        let rows = vec![
+            LogEntry {
+                id: Some(1),
+                task_id: Some(18),
+                level: "info".to_string(),
+                message: "已提交，等待生成完成".to_string(), // 全角逗号，不需要引号
+                created_at: Some("2026-11-09T04:19:32+00:00".to_string()),
+                task_name: Some("镊子-2026-11-09".to_string()),
+            },
+            LogEntry {
+                id: Some(2),
+                task_id: None,
+                level: "error".to_string(),
+                message: "含半角,逗号 \"引号\"\n换行".to_string(),
+                created_at: Some("2026-11-09T04:20:00+00:00".to_string()),
+                task_name: None,
+            },
+            LogEntry {
+                id: Some(3),
+                task_id: Some(99),
+                level: "warn".to_string(),
+                message: "=1+1".to_string(), // 公式注入：前缀 ' 中和
+                created_at: None,
+                task_name: Some("".to_string()),
+            },
+        ];
+        let out = render_logs_csv(&rows);
+        assert!(out.starts_with('\u{FEFF}'), "必须带 BOM 供 Excel 识别 UTF-8");
+        let body = out.trim_start_matches('\u{FEFF}');
+        assert!(body.starts_with("时间,级别,任务ID,任务名称,消息\n"));
+        // 全角逗号原文直出（CSV 只认半角逗号）
+        assert!(out.contains("2026-11-09T04:19:32+00:00,info,18,镊子-2026-11-09,已提交，等待生成完成\n"));
+        // 半角逗号+引号+换行 → 整体加引号、引号加倍
+        assert!(out.contains(",\"含半角,逗号 \"\"引号\"\"\n换行\"\n"));
+        // 缺 task_id / created_at / task_name → 空字段
+        assert!(out.contains(",error,,,"));
+        assert!(out.contains("2026-11-09T04:20:00+00:00,error,,,\"含半角"));
+        // 公式注入被前缀 ' 中和（整行含引号是因为 csv_field 处理换行）
+        assert!(out.contains("'=1+1\n"));
+    }
+
+    #[test]
+    fn csv_field_quotes_only_when_needed_and_doubles_quotes() {
+        assert_eq!(csv_field("plain"), "plain");
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_field("line1\nline2"), "\"line1\nline2\"");
+        assert_eq!(csv_field("a\rb"), "\"a\rb\"");
+    }
+
+    #[test]
+    fn csv_cell_neutralizes_formula_injection() {
+        assert_eq!(csv_cell("=1+1"), "'=1+1");
+        assert!(csv_cell("+cmd").starts_with('\''));
+        assert!(csv_cell("-2+3").starts_with('\''));
+        assert!(csv_cell("@SUM(A1)").starts_with('\''));
+        assert!(csv_cell("  =1+1").starts_with('\'')); // 首个非空白字符仍为 =
+        assert!(csv_cell("=a,b").starts_with("\"'")); // 前缀后含逗号 → 整体再被 csv_field 加引号
+        assert_eq!(csv_cell("正常消息"), "正常消息");
+        assert_eq!(csv_cell("100"), "100");
+        assert_eq!(csv_cell("-"), "'-");
+        assert_eq!(csv_cell(" "), " ");
     }
 }

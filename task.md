@@ -1438,7 +1438,7 @@ README 中说明：
 | 16 | 不会因为状态不明而重复提交 | ✅（2026-11-09 B6：生成等待中断网注入（task #17）——sidecar 180s 判 `generation_timeout`，任务落 `needs_manual_intervention`（本次将该分类从 `failed` 对齐为 `needs_manual_intervention`）、通知 kind=`needs_manual_intervention`；`submit_count` 不增加（未确认提交不计数）、全程无重复提交；恢复网络「继续执行」→ resume 探测 `chat/<id>` 已生成 → 提取→下载→校验→completed） |
 | 17 | 能处理登录失效、验证码和网页结构变化 | 🟡（登录失效：2026-11-09 B7 故障注入实测通过（task #18）。验证码：2026-11-09 B8——新增 `captcha_required` 检测（登录检查后风控文本识别 + 诊断快照 + `needs_manual_intervention`），离线 24 用例 + 真实对照任务 #19 通过，但真实验证码无法可靠触发，未做注入实测。网页结构变化：走 `submit_button_not_found`/`textbox_not_found`/`upload_input_not_found` 既有兜底（诊断快照 + 需人工处理），未真实注入） |
 | 18 | 能保留错误截图和诊断信息 | ✅（2026-11-09 B9：真实失败场景复核——B7 login_required（task #18）与 B6 generation_timeout（task #17）诊断三件齐全（截图+HTML+`diagnostics/*.json`{tag,url,timestamp}，url 含具体 chat 页地址）；extract 失败诊断路径确认同写 png+html+json（磁盘唯一历史实例 2026-11-06 为 c9558bd「失败诊断」之前产物，无 json，非回归）；执行日志 0/225、通知 0/6、诊断 HTML 无 Cookie/密码/token 实值；失败轮次目录保留 prompt.txt+references.json） |
-| 19 | 能查看和导出完整执行日志 | 🟡（筛选/导出 UI 与命令已接线并通过 GUI 渲染验证，未实际写出 CSV 导出文件对账） |
+| 19 | 能查看和导出完整执行日志 | ✅（2026-11-09 B10：GUI 导出全量 225 行 + 筛选 task=18 导出 21 行，均经 Python csv 解析并与 DB 逐单元格核对 0 不符；UTF-8 BOM 中文正常（Excel COM 实测：A1=时间、E3 中文整句一致、226×5）；含半角逗号/引号/换行的 2 条巨型日志原样往返；公式注入 `= + - @` 前缀 `'` 中和（新增 Rust 单元测试，45/45）；5000 行上限为前端 buildFilter(5000)+后端 `clamp(1, 5000)`，225 行环境无法触发阈值，仅按代码与界面文案核对） |
 | 20 | 支持中文和英文 | ✅ |
 | 21 | 支持检查和安装软件更新 | 🟡（更新/安装流程已实现并通过静态检查，未用真实新版本端到端验证） |
 | 22 | 文档齐全 | ✅ |
@@ -1448,6 +1448,22 @@ README 中说明：
 - `docs/TECHNICAL_VALIDATION.md` 的 Phase 0 结论基于源码分析，登录后环节的实测记录见 `docs/TESTING.md`；两者应结合阅读。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-09（B10 日志 CSV 导出实际对账，零额度）
+
+**实现审计：** `logs_export` 原直接拼串写文件；本轮抽出纯函数 `render_logs_csv`（BOM + 表头「时间,级别,任务ID,任务名称,消息」+ 每行一条，字段 `csv_cell` 转义：公式注入 `=/+/-/@` 前缀 `'`），新增 3 个单元测试（`csv_field` 引号/换行加倍引号、`csv_cell` 公式注入前缀、`render_logs_csv` BOM+表头+转义+空字段）。`logs_query_with_conn` 限制 `clamp(1, 5000)`；前端导出 `buildFilter(5000)`。
+
+**实测（GUI + Python + Excel COM）：**
+- GUI 流程：执行日志页 →（可筛选：任务ID/账号/级别/时间）→「导出 CSV」→ 系统保存对话框 → 成功提示（显示导出条数，含 5000 上限文案「筛选后自动应用到导出；CSV 最多导出 5000 条」）。原生保存对话框按钮自动化不可点（open-computer-use 对该对话框无效），由用户人工两次完成保存（全量 / 筛选 task=18）。
+- 全量导出 `execution-logs.csv`：BOM `EF BB BF` ✅；表头「时间,级别,任务ID,任务名称,消息」✅；226 行（含表头）；python csv 解析与 DB（同序、同 WHERE）**逐单元格 225/225 一致**，不一致 0。
+- 筛选导出（任务ID=18）：22 行（21 数据行），与 DB `WHERE task_id=18` 逐单元格 **21/21 一致** ✅——导出范围与筛选一致。
+- 2 条巨型日志（含半角引号、`\n` 换行、ANSI 转义，来自历史 playwright locator.click 超时报错）经 CSV 解析**原样往返**，无截断/错列。
+- Excel（COM 不可见方式打开）：226×5，`A1=时间`，`D2=镊子-2026-11-09`，`E2=任务完成`，`E3=任务完成：共 1 轮，累计成功下载 5 张图片`——BOM 使 Excel 正确识别 UTF-8，中文无乱码 ✅。
+- 公式注入：DB 中无以 `=/+/-/@` 开头的 message（0/225），中和逻辑由新增单元测试覆盖（`=1+1` → `'=1+1`、`@SUM(A1)` → `'@SUM(A1)`、`  =1+1` → `'  =1+1`）。
+- 5000 行上限：前端 `limit=5000` + 后端 clamp，界面提示文案、导出成功提示均提及；DB 仅 225 行，未能以>5000 数据实测阈值（记录）。
+- GUI 逐行对账：界面筛选后 21 行（任务 #18，含 11:45:21 ERROR 行）与 DB/CSV 一致 ✅。
+
+**验收：** 23.3 #19 ✅；B10 todo 闭合。
 
 ### 2026-11-09（B9 失败诊断复现验证，task #17/#18 均为真实零额度复核）
 
