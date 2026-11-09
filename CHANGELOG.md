@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v1.3.0] - 2026-11-09
+
 ### 新增
 
 - 新增验证码/人机风控页检测：sidecar 在登录检查后识别风控特征文本（`请完成…验证`/`拖动滑块`/`滑动拼图`/`人机验证`/`安全验证`/`人脸验证`/`访问频繁`/`操作频繁`/`captcha`，避开登录页「验证码登录」），检测到 → 保存诊断快照（截图+HTML+JSON 落 `output/diagnostics/`）→ `reason=captcha_required` 直接返回（不提交、不点击，绝不自动绕过）；Rust `classify_gen_failure` 映射为 `needs_manual_intervention`（通知「需要验证码/人机验证，请在可见浏览器中手动完成后继续」）。新增 `sidecar/src/detectors.js` 与 `detectors.test.js`（24 例，接入 `scripts/run-tests.ps1`）+ Rust 单元测试。

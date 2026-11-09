@@ -41,9 +41,9 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
           releaseBody: |-
-            v1.2.0（2026-11-09）——见 CHANGELOG.md 的 [v1.2.0] 段。
+            v1.3.0（2026-11-09）——见 CHANGELOG.md 的 [v1.3.0] 段。
 
-            主要内容：修复「提交后等待生成超时」落 needs_manual_intervention（不再误标 failed、绝不自动重复提交，恢复网络后「继续执行」经页面探测取回生成结果）；修复 DOM 兜底提取把同一底图的缩略图与高清图各算一张的问题（每轮只下载高清图，cgen 优先）；轮次详情页图片显示修复 + 新增「打开目录」按钮；新增「默认账号每日生图额度」设置（本地自然日、已校验张数计数，仅用于任务分配参考，实际以豆包实际为准）；界面时间统一本地时区显示；修复文档级滚动条导致底部裁切；fresh 档案推广弹窗自动关闭。
+            主要内容：新增验证码/人机风控页检测（captcha_required → 诊断快照 + needs_manual_intervention，绝不自动绕过）；日志 CSV 导出公式注入中和、CSV 渲染抽纯函数并逐单元格对账 0 不符；wait_result 计时路径确定性测试（48/48）；Playwright Trace 真实任务验证回放通过；B 系列故障注入实测闭合验收 #13–#19。
 
             安装包自带内置运行时，安装后即可使用。
           releaseDraft: false
