@@ -2549,6 +2549,61 @@ mod tests {
         assert_eq!(merged2.len(), 2);
     }
 
+    // ===== wait_result 计时路径确定性测试（B11）=====
+    // 被测路径：「提交后等待生成、wait_result 超时 → needs_manual_intervention、不重复提交」。
+    // 用 #[tokio::test(start_paused = true)] 冻结时间，timeout 到期由 paused clock 推进，
+    // 无真实等待，结果确定。迟到的旧 result（不同 request_id）必须被忽略。
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_result_times_out_and_stale_request_id_is_ignored() {
+        let scheduler = Scheduler::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // 迟到的旧 result：与当前等待的 request_id 不符，必须被忽略
+        tx.send(serde_json::json!({
+            "type": "result",
+            "cmd": "generate_images",
+            "request_id": "req-stale",
+        }))
+        .unwrap();
+        let out = wait_result(&mut rx, "generate_images", "req-current", 30, &scheduler, 1).await;
+        assert!(matches!(out, WaitOutcome::Timeout));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_result_returns_matching_result() {
+        let scheduler = Scheduler::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(serde_json::json!({
+            "type": "result",
+            "cmd": "generate_images",
+            "request_id": "req-current",
+            "ok": true,
+        }))
+        .unwrap();
+        let out = wait_result(&mut rx, "generate_images", "req-current", 30, &scheduler, 1).await;
+        match out {
+            WaitOutcome::Result(ev) => assert_eq!(ev["request_id"], "req-current"),
+            WaitOutcome::Timeout => panic!("应返回匹配的结果，而非超时"),
+            WaitOutcome::Interrupted => panic!("应返回匹配的结果，而非中断"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_result_interrupted_when_cancel_requested_before_result() {
+        let scheduler = Scheduler::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        scheduler.request_cancel(7);
+        // 即使有匹配的 result 也不得被采纳：暂停/取消优先
+        tx.send(serde_json::json!({
+            "type": "result",
+            "cmd": "generate_images",
+            "request_id": "req-current",
+        }))
+        .unwrap();
+        let out = wait_result(&mut rx, "generate_images", "req-current", 30, &scheduler, 7).await;
+        assert!(matches!(out, WaitOutcome::Interrupted));
+    }
+
     #[test]
     fn classify_gen_failure_maps_manual_intervention_reasons() {
         assert_eq!(
@@ -2559,6 +2614,8 @@ mod tests {
             classify_gen_failure("captcha_required"),
             ("needs_manual_intervention", "需要验证码/人机验证，请在可见浏览器中手动完成后继续")
         );
+        // 提交后等待生成超时（wait_result Timeout 的实际取值）→ 需人工处理、不得自动重提交
+        assert_eq!(classify_gen_failure("generation_timeout").0, "needs_manual_intervention");
     }
 
     #[test]

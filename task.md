@@ -1414,7 +1414,7 @@ README 中说明：
   - 文档 `docs/TESTING.md` 已更新（测试数、一键脚本、未覆盖项说明：真实 Doubao 浏览器 E2E 仍待具备账号环境后的用户监督复测）。
   - 2026-11-08 真实账号单轮全链路 E2E（用户监督）：任务 #9 完整走通 创建→扫描（`references/`）→抽 5 张→切换图像生成模式→上传→填写提示词→提交前确认暂停→用户点「继续执行」→发送→等待生成→提取 2 张→下载校验→completed。产物在 `output/20261108_134142_075/001.png|002.png`（SHA-256 与 `task_images.download_status='verified'` 均已入库）。
   - 2026-11-08 补测（用户监督）：3 轮多轮 E2E + 生成等待中暂停/继续（task #10：3 轮 completed，6/6 verified，resume 探测无重复提交）；账号阈值暂停（task #11：needs_manual_intervention + notice）；修复后复验（task #12：2/2 verified，账号 `logged_in` / submit_count 0→1 / success_count 5→6，修复 `1edc0f6`）。
-  - 仍待：wait_result 计时路径缺少确定性测试；超时/状态不明注入（B6）。
+  - 2026-11-09 B11：wait_result 计时路径确定性测试已补齐——`#[tokio::test(start_paused = true)]` 冻结时间，覆盖「无匹配事件 → Timeout」「迟到旧 request_id 被忽略」「匹配 result → Result」「取消优先 → Interrupted」；并补 `generation_timeout → needs_manual_intervention` 分类断言（提交后等待生成超时不落 auto 重提交）。`cargo test --offline --target-dir target3` 48/48 通过。「超时/状态不明注入」由 B6（task #17）真实断网注入实测。
 
 ## 23.3 最终验收对照
 
@@ -1448,6 +1448,12 @@ README 中说明：
 - `docs/TECHNICAL_VALIDATION.md` 的 Phase 0 结论基于源码分析，登录后环节的实测记录见 `docs/TESTING.md`；两者应结合阅读。
 
 ## 23.5 本轮变更记录
+
+### 2026-11-09（B11 wait_result 计时路径确定性测试）
+
+**改动文件：** `src-tauri/Cargo.toml`（新增 `[dev-dependencies] tokio test-util`，仅测试用，不进发布 feature）；`src-tauri/src/task_scheduler.rs`（新增 3 个 `#[tokio::test(start_paused = true)]` 确定性测试：无匹配事件 → `WaitOutcome::Timeout`（迟到旧 request_id 被忽略）、匹配 result → `Result`、`request_cancel` 优先 → `Interrupted`；`classify_gen_failure` 测试补 `generation_timeout → needs_manual_intervention` 断言）。
+
+**验证：** `cargo test --offline --target-dir target3` **48/48 通过**（3 个新测试 0.02s 跑完，冻结时间无真实等待、离线可跑）。「提交后等待生成超时 → needs_manual_intervention、不自动重提交」路径（B6 task #17 真实断网注入）现有确定性单元背书。注记 P1-7 已同步；TESTING.md 计数同步（Rust 48、总计 135）。
 
 ### 2026-11-09（B10 日志 CSV 导出实际对账，零额度）
 

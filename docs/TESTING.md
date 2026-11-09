@@ -12,8 +12,8 @@
 | Sidecar 遮罩关闭单元测试 | 4 | 4 | 0 | ✅ |
 | Sidecar DOM 兜底去重单元测试 | 5 | 5 | 0 | ✅ |
 | Sidecar 验证码/风控检测单元测试 | 24 | 24 | 0 | ✅ |
-| Rust 单元测试 | 45 | 45 | 0 | ✅ |
-| **总计** | **132** | **132** | **0** | **✅ 全部通过** |
+| Rust 单元测试 | 48 | 48 | 0 | ✅ |
+| **总计** | **135** | **135** | **0** | **✅ 全部通过** |
 
 ## 测试环境
 
@@ -407,7 +407,7 @@ cargo tauri build
 - 多项目队列串行：2026-11-08 B5 已测（#15→#16，两项目串行全链路完成，详见 B5 节）。
 - 账号阈值暂停（image_threshold）：已测（task #11）；auto 选号跳过 login_pending 的行为未在真实环境复测（账号现已回写 logged_in）。
 - 参数继承（P0-4：全局默认 → 项目覆盖 → 继承）：已完成真实页面参数验证与单元测试覆盖（`merge_gen_params`），「全局 → 项目 → 继承」解析链离线已测；「apply 写入豆包页面」的真实 E2E 未单独验证（gen_params 默认仅记录不下发）。
-- 集成级任务状态机测试（require 真实 Doubao），当前以 `wait_result` 超时→失败路径的 `cargo test` 级别覆盖，计时路径缺少确定性测试。
+- 集成级任务状态机测试（require 真实 Doubao）：2026-11-09 B11 已为 `wait_result` 计时路径补齐确定性单元测试（`start_paused` 冻结时间：无匹配事件 → Timeout、迟到旧 request_id 被忽略、匹配 result → Result、取消优先 → Interrupted；`generation_timeout` 分类断言），`cargo test` 48/48。真实 Doubao 端到端的计时与故障注入由 B6（断网）/B7（登录失效）/B8（验证码）真实场景覆盖。
 
 ## 测试覆盖率统计
 
@@ -421,8 +421,8 @@ cargo tauri build
 | 遮罩关闭逻辑 | sidecar/src/overlays.test.js | 4 | 100% |
 | DOM 兜底去重 | sidecar/src/extractor.test.js | 5 | 100% |
 | 验证码/风控检测 | sidecar/src/detectors.test.js | 24 | 100% |
-| Rust 调度/迁移/命令 | src-tauri/Cargo | 45 | 100% |
-| **总计** | - | **132** | **100%** |
+| Rust 调度/迁移/命令 | src-tauri/Cargo | 48 | 100% |
+| **总计** | - | **135** | **100%** |
 
 ## 文档完整性检查
 
@@ -441,5 +441,5 @@ cargo tauri build
 
 ---
 
-*测试报告更新时间：2026-11-09（含 B6 断网注入实测 + B7 登录失效故障注入实测 + B8 验证码检测实现与对照 + B9 失败诊断复现验证 + B10 日志 CSV 导出对账 + DOM 兜底去重离线测试 + RoundDetail asset 修复）*
+*测试报告更新时间：2026-11-09（含 B6 断网注入实测 + B7 登录失效故障注入实测 + B8 验证码检测实现与对照 + B9 失败诊断复现验证 + B10 日志 CSV 导出对账 + B11 wait_result 计时路径确定性测试 + DOM 兜底去重离线测试 + RoundDetail asset 修复）*
 *适用版本：v1.1.0*

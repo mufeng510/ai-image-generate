@@ -20,6 +20,10 @@ dirs = "5"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[dev-dependencies]
+# 仅用于 wait_result 计时路径确定性测试（start_paused）；不进入发布构建的 feature 集合
+tokio = { version = "1", features = ["test-util"] }
+
 [profile.release]
 opt-level = 3
 
