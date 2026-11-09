@@ -59,6 +59,7 @@ fn main() {
             commands::task_cancel,
             commands::task_detail,
             commands::task_list_rounds,
+            commands::round_open_output_dir,
             commands::task_list_images,
             commands::dashboard_stats,
             commands::execution_logs,

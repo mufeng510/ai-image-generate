@@ -10,6 +10,7 @@ import { convertFileSrc } from '@tauri-apps/api/core'
 import {
   taskListRounds,
   taskListImages,
+  roundOpenOutputDir,
   type TaskRound,
   type TaskImage,
 } from '@/hooks/api'
@@ -44,6 +45,15 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
   useEffect(() => {
     loadRounds(taskId)
   }, [taskId])
+
+  const handleOpenFolder = async (roundId?: number) => {
+    if (roundId == null) return
+    try {
+      await roundOpenOutputDir(roundId)
+    } catch (e) {
+      alert(t('roundDetail.openFolderFailed') + e)
+    }
+  }
 
   const loadRounds = async (taskId: number) => {
     setLoading(true)
@@ -144,16 +154,27 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
                   {round.submitted_at || '-'}
                 </td>
                 <td style={{ padding: '10px' }}>
-                  {selectedRoundId === round.id ? (
-                    <span style={{ color: '#16a34a', fontSize: '11px' }}>{t('roundDetail.selected')}</span>
-                  ) : (
-                    <button
-                      onClick={() => setSelectedRoundId(round.id ?? null)}
-                      style={{ background: '#f3f4f6', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
-                    >
-                      {t('btn.view')}
-                    </button>
-                  )}
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    {selectedRoundId === round.id ? (
+                      <span style={{ color: '#16a34a', fontSize: '11px' }}>{t('roundDetail.selected')}</span>
+                    ) : (
+                      <button
+                        onClick={() => setSelectedRoundId(round.id ?? null)}
+                        style={{ background: '#f3f4f6', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
+                      >
+                        {t('btn.view')}
+                      </button>
+                    )}
+                    {round.output_dir && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleOpenFolder(round.id) }}
+                        title={round.output_dir}
+                        style={{ background: '#166534', color: '#fff', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
+                      >
+                        {t('roundDetail.openFolder')}
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -178,9 +199,20 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
                 {STATUS_LABELS[selectedRound.status || ''] || selectedRound.status}
               </div>
             </div>
-            <div style={{ fontSize: '13px', color: '#6b7280', textAlign: 'right' }}>
-              {selectedRound.submitted_at || '-'}{' | '}
-              {selectedRound.completed_at || '-'}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ fontSize: '13px', color: '#6b7280', textAlign: 'right' }}>
+                {selectedRound.submitted_at || '-'}{' | '}
+                {selectedRound.completed_at || '-'}
+              </div>
+              {selectedRound.output_dir && (
+                <button
+                  onClick={() => handleOpenFolder(selectedRound.id)}
+                  title={selectedRound.output_dir}
+                  style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', whiteSpace: 'nowrap' }}
+                >
+                  {t('roundDetail.openFolder')}
+                </button>
+              )}
             </div>
           </div>
 

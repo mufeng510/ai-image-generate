@@ -89,6 +89,7 @@ export interface TaskRound {
   round_number?: number
   prompt_snapshot?: string
   references_json?: string
+  output_dir?: string | null
   status?: string
   submitted_at?: string
   completed_at?: string
@@ -334,6 +335,10 @@ export async function taskDetail(id: number): Promise<Task | null> {
 
 export async function taskListRounds(task_id: number): Promise<TaskRound[]> {
   return invoke('task_list_rounds', { task_id })
+}
+
+export async function roundOpenOutputDir(round_id: number): Promise<void> {
+  return invoke('round_open_output_dir', { round_id })
 }
 
 export async function taskListImages(round_id: number): Promise<TaskImage[]> {

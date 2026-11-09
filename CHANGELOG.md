@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 轮次详情页新增「打开目录」按钮（轮次表格行内 + 图片详情头部各一处）：直接用系统文件管理器打开该批次的生成输出目录（`output/时间戳/`）；后端新增 `round_open_output_dir` 命令（按 `task_rounds.output_dir` 打开，目录不存在时报错），界面双语（打开目录 / Open folder）
+
 ### 修复
 
 - 修复 fresh 浏览器档案首次访问豆包弹出「下载电脑版」推广弹窗（Radix `role=dialog`，全视口固定定位）拦截提示词输入框、导致 `locator.click` 30s 超时的问题（task #16 首轮失败）：遮罩关闭逻辑抽取为 `sidecar/src/overlays.js`；新增 `waitAndDismissOverlays`——持续关闭并轮询直到连续 `stableMs` 内页面无可见遮罩（覆盖弹窗晚于 hydration 出现的时序）；应用在打开新对话页、输入提示词前、提示词已输入后均改为该等待式关闭；输入框点击增加「关闭遮罩后重试一次」兜底（与发送按钮一致）；Radix 关闭按钮选择器补充 `[data-slot="dialog-close"]` / `[data-slot="alert-dialog-close"]`

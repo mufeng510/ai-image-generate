@@ -1679,6 +1679,26 @@ pub async fn task_list_rounds(task_id: i64) -> Result<Vec<TaskRound>, String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub async fn round_open_output_dir(round_id: i64) -> Result<(), String> {
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let output_dir: Option<String> = conn
+        .query_row(
+            "SELECT output_dir FROM task_rounds WHERE id = ?1",
+            [round_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("轮次不存在：{}", e))?;
+    let dir = output_dir
+        .filter(|d| !d.trim().is_empty())
+        .ok_or_else(|| "该轮次没有输出目录记录".to_string())?;
+    let path = std::path::PathBuf::from(&dir);
+    if !path.is_dir() {
+        return Err(format!("输出目录不存在或不可访问：{}", dir));
+    }
+    open_in_file_manager(&path)
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub async fn task_list_images(round_id: i64) -> Result<Vec<TaskImage>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
