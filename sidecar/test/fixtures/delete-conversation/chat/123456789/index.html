@@ -1,0 +1,40 @@
+<!doctype html><html><head><meta charset="utf-8"><title>delete-conversation fixture</title></head>
+<body>
+  <a id="conversation_123456789" href="/chat/123456789"><div data-testid="conversation-list-v2-item">测试会话</div></a>
+  <header><button id="more" aria-label="更多" style="position:fixed;top:8px;right:8px;width:40px;height:32px">⋯</button></header>
+  <script>
+    document.getElementById('more').addEventListener('click', () => {
+      if (document.querySelector('[role="menu"]')) return;
+      const menu = document.createElement('div');
+      menu.setAttribute('role', 'menu');
+      menu.style.cssText = 'position:fixed;top:48px;right:8px;background:#fff;border:1px solid #ccc;padding:8px;z-index:10';
+      const item = (label) => {
+        const b = document.createElement('button');
+        b.setAttribute('role', 'menuitem');
+        b.textContent = label;
+        return b;
+      };
+      menu.appendChild(item('重命名'));
+      menu.appendChild(item('取消归档'));
+      const del = item('删除');
+      del.addEventListener('click', () => {
+        if (document.querySelector('[role="dialog"]')) return;
+        const d = document.createElement('div');
+        d.setAttribute('role', 'dialog');
+        d.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:20';
+        const box = document.createElement('div');
+        box.style.cssText = 'position:absolute;top:30%;left:40%;background:#fff;padding:20px;border-radius:8px';
+        box.innerHTML = '<div>删除后不可恢复</div><div style="margin-top:12px"><button id="cancel-btn">取消</button> <button id="confirm-delete" style="background:#dc2626;color:#fff;border:0;padding:6px 16px">删除</button></div>';
+        d.appendChild(box);
+        d.querySelector('#cancel-btn').addEventListener('click', () => d.remove());
+        d.querySelector('#confirm-delete').addEventListener('click', () => {
+          document.getElementById('conversation_123456789').remove();
+          d.remove();
+        });
+        document.body.appendChild(d);
+      });
+      menu.appendChild(del);
+      document.body.appendChild(menu);
+    });
+  </script>
+</body></html>

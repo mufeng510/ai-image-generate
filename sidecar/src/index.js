@@ -13,6 +13,7 @@
  *     {"cmd":"resume_generate","account_id":1,"generation_timeout_ms":180000}
  *     {"cmd":"extract_images","account_id":1,"project_root":"..."}
  *     {"cmd":"download_images","account_id":1,"round_id":1,"round_dir":"...","images":[{"url":"...","index":0}]}
+ *     {"cmd":"delete_conversation","account_id":1}
  *     {"cmd":"stop_browser","account_id":1}
  *   输出（stdout）：JSON 行协议，每行一个事件：
  *     {"type":"log","level":"info","message":"..."}
@@ -38,6 +39,7 @@ const { ImagePool } = require('./pool');
 const { downloadImage } = require('./downloader');
 const { dismissPageOverlays, waitAndDismissOverlays, setLogger } = require('./overlays');
 const { isCaptchaText } = require('./detectors');
+const { deleteCurrentConversation } = require('./deleter');
 const { installResponseCapture, getCapturedImages, clearCaptured } = require('./response-capture');
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -811,6 +813,23 @@ async function generateImagesInner(cmd) {
   return { ok: true, images_found: lastCount };
 }
 
+/** 删除当前打开的豆包会话（下载完成后按需调用；只删当前 /chat/<id>，失败不抛出） */
+async function deleteConversation(cmd) {
+  const accountId = cmd.account_id;
+  const ctx = contexts.get(accountId);
+  if (!ctx) {
+    return { ok: false, reason: 'browser_not_started' };
+  }
+  const page = await acquirePage(ctx);
+  const result = await deleteCurrentConversation(page);
+  if (result.ok) {
+    log('info', `已删除豆包会话 #${result.chat_id}${result.verified ? '' : '（未能确认消失，请留意侧边栏）'}`);
+  } else {
+    log('warn', `删除豆包会话未完成（${result.reason}）：${result.message || ''}`);
+  }
+  return result;
+}
+
 /** 下载给定的图片 URL 列表到 round 目录 */
 async function downloadImages(cmd) {
   const accountId = cmd.account_id;
@@ -886,6 +905,8 @@ async function handleCommand(cmd) {
       return await probeAndExtract(cmd);
     case 'download_images':
       return await downloadImages(cmd);
+    case 'delete_conversation':
+      return await deleteConversation(cmd);
     default:
       throw new Error(`未知命令: ${cmd.cmd}`);
   }
@@ -936,4 +957,4 @@ function main() {
 
 main();
 
-module.exports = { scanAndSelect, probeAndExtract, generateImages, resumeGenerate, downloadImages, startBrowser, stopBrowser, openLogin };
+module.exports = { scanAndSelect, probeAndExtract, generateImages, resumeGenerate, downloadImages, deleteConversation, startBrowser, stopBrowser, openLogin };

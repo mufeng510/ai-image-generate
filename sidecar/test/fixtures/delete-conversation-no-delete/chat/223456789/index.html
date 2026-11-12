@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8"><title>delete-conversation fixture (no delete item)</title></head>
+<body>
+  <a id="conversation_223456789" href="/chat/223456789"><div data-testid="conversation-list-v2-item">测试会话</div></a>
+  <header><button id="more" aria-label="更多" style="position:fixed;top:8px;right:8px;width:40px;height:32px">⋯</button></header>
+  <script>
+    document.getElementById('more').addEventListener('click', () => {
+      if (document.querySelector('[role="menu"]')) return;
+      const menu = document.createElement('div');
+      menu.setAttribute('role', 'menu');
+      menu.style.cssText = 'position:fixed;top:48px;right:8px;background:#fff;border:1px solid #ccc;padding:8px;z-index:10';
+      const item = (label) => {
+        const b = document.createElement('button');
+        b.setAttribute('role', 'menuitem');
+        b.textContent = label;
+        return b;
+      };
+      menu.appendChild(item('重命名'));
+      menu.appendChild(item('取消归档'));
+      document.body.appendChild(menu);
+    });
+  </script>
+</body></html>

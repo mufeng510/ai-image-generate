@@ -28,6 +28,7 @@ Invoke-Step 'sidecar: detectors' { node sidecar/src/detectors.test.js }
 Invoke-Step 'sidecar: extractor (DOM 兜底去重)' { node sidecar/src/extractor.test.js }
 Invoke-Step 'sidecar: response-capture (网络拦截)' { node sidecar/src/response-capture.test.js }
 Invoke-Step 'sidecar: overlays (headless chromium)' { node sidecar/src/overlays.test.js }
+Invoke-Step 'sidecar: delete-conversation (headless chromium)' { node sidecar/src/deleter.test.js }
 Invoke-Step 'Rust unit tests' {
     Push-Location src-tauri
     try { cargo test } finally { Pop-Location }

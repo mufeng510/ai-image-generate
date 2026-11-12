@@ -27,6 +27,10 @@ use tokio::time::{sleep, Duration};
 use crate::db::get_connection;
 use crate::models::Task;
 
+/** Windows：spawn 控制台子系统进程时不单独创建控制台窗口（sidecar 无 UI，日志走管道转发） */
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /** 任务控制指令（暂停/取消） */
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlState {
@@ -114,6 +118,11 @@ impl Scheduler {
             // 否则回落到系统 Playwright 缓存目录（%LOCALAPPDATA%\\ms-playwright）。
             if let Some(browsers) = playwright_browsers_path(app) {
                 cmd.env("PLAYWRIGHT_BROWSERS_PATH", canonicalize_path(browsers));
+            }
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(CREATE_NO_WINDOW);
             }
             let mut child = cmd
                 .spawn()
@@ -2299,6 +2308,49 @@ async fn finish_after_generation(
                 let _ = db_write_log(&conn, Some(tid), "warn",
                     &format!("第 {} 轮部分成功：仅获取 {}/{} 张图片（豆包未出齐或提取较晚），已保留并继续后续轮次", round_number, success_count, expected));
             }
+        }
+    }
+
+    // 可选：本轮图片完整下载后，删除对应豆包会话（用户显式开启 delete_conversation_after_download；默认关闭；
+    // 少图/未完整下载不删除；失败仅记录日志，不影响轮次结果）
+    let images_fully_downloaded = match expected_images {
+        Some(e) => success_count >= e,
+        None => success_count > 0,
+    };
+    if setting_enabled("delete_conversation_after_download")
+        && images_fully_downloaded
+        && scheduler.control_state(tid) == ControlState::Running
+    {
+        let delete_request_id = new_request_id();
+        let delete_cmd = serde_json::json!({
+            "cmd": "delete_conversation",
+            "task_id": tid,
+            "request_id": delete_request_id,
+            "account_id": account_id,
+        });
+        match scheduler.send_sidecar_cmd(delete_cmd) {
+            Ok(()) => {
+                match wait_result(event_rx, "delete_conversation", &delete_request_id, 60, scheduler, tid).await {
+                    WaitOutcome::Result(v) => {
+                        let ok = v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                        if ok {
+                            let chat_id = v.get("chat_id").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                            let verified = v.get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
+                            if let Ok(conn) = get_connection() {
+                                let _ = db_write_log(&conn, Some(tid), "info",
+                                    &format!("已删除本轮对应的豆包会话 #{}{}", chat_id, if verified { "" } else { "（未确认侧边栏已移除，请留意）" }));
+                            }
+                        } else {
+                            let reason = v.get("reason").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                            let msg = v.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            log_round_warn(tid, &format!("删除豆包会话未完成（{}）：{}", reason, msg));
+                        }
+                    }
+                    WaitOutcome::Timeout => log_round_warn(tid, "删除豆包会话等待超时（图片已保留，会话未删除）"),
+                    WaitOutcome::Interrupted => log_round_warn(tid, "删除豆包会话阶段被中断（图片已保留）"),
+                }
+            }
+            Err(e) => log_round_warn(tid, &format!("发送删除会话命令失败: {}", e)),
         }
     }
     Some(success_count)

@@ -25,6 +25,7 @@ export default function SettingsPage() {
   const [autoRunGate, setAutoRunGate] = useState(false)
   const [defaultQuota, setDefaultQuota] = useState('0')
   const [expectedImages, setExpectedImages] = useState('5')
+  const [deleteConversation, setDeleteConversation] = useState(false)
 
   async function load() {
     const v = await settingsGet('project_root')
@@ -49,6 +50,8 @@ export default function SettingsPage() {
     if (dq != null) setDefaultQuota(dq)
     const ei = await settingsGet('expected_images_per_round')
     setExpectedImages(ei == null ? '5' : ei)
+    const dc = await settingsGet('delete_conversation_after_download')
+    setDeleteConversation(dc === 'true')
     schedulerAutoRunGet().then(setAutoRunGate).catch(() => setAutoRunGate(false))
     getVersion().then(setVersion).catch(() => setVersion('unknown'))
   }
@@ -159,6 +162,15 @@ export default function SettingsPage() {
     }
   }
 
+  async function toggleDeleteConversation(value: boolean) {
+    try {
+      await settingsSet('delete_conversation_after_download', value ? 'true' : 'false')
+      setDeleteConversation(value)
+    } catch (e) {
+      alert(t('settings.saveFailed') + e)
+    }
+  }
+
   async function toggleNotify(value: boolean) {
     if (!value) {
       try {
@@ -235,6 +247,23 @@ export default function SettingsPage() {
             />
             <span style={{ fontSize: '13px', color: '#6b7280' }}>{t('settings.expectedImagesUnit')}</span>
             <button onClick={saveExpectedImages} style={{ padding: '8px 14px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>{t('btn.save')}</button>
+          </div>
+        </div>
+        <div style={{ marginBottom: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <input
+              id='delete-conv'
+              type='checkbox'
+              checked={deleteConversation}
+              onChange={(e) => toggleDeleteConversation(e.target.checked)}
+              style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+            />
+            <div>
+              <label htmlFor='delete-conv' style={{ fontSize: '13px', color: '#1a1a1a', cursor: 'pointer' }}>
+                {t('settings.deleteConversation')}
+              </label>
+              <p style={{ fontSize: '12px', color: '#9ca3af', margin: '4px 0 0' }}>{t('settings.deleteConversationNote')}</p>
+            </div>
           </div>
         </div>
         <div style={{ marginBottom: '16px' }}>
