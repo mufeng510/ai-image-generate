@@ -95,7 +95,8 @@ ai-image-generate/
 │   ├── src/
 │   │   ├── index.js            # Sidecar 入口，监听 stdin
 │   │   ├── browser.js          # Playwright 启动/控制
-│   │   ├── extractor.js        # 图片提取 (image_ori_raw)
+│   │   ├── response-capture.js # 网络拦截：/chat/completion 与 /im/chain/single → image_ori_raw 原图
+│   │   ├── extractor.js        # 静态内嵌 JSON 兜底解析 (image_ori_raw) + 去重工具
 │   │   └── downloader.js       # 图片下载 + 校验
 │   └── ...
 ├── docs/

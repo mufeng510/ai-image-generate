@@ -38,6 +38,7 @@ const { ImagePool } = require('./pool');
 const { downloadImage } = require('./downloader');
 const { dismissPageOverlays, waitAndDismissOverlays, setLogger } = require('./overlays');
 const { isCaptchaText } = require('./detectors');
+const { installResponseCapture, getCapturedImages, clearCaptured } = require('./response-capture');
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
 
@@ -116,11 +117,12 @@ function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-/** 取当前活跃页面：优先复用已打开页面，否则新建 */
+/** 取当前活跃页面：优先复用已打开页面，否则新建（并确保已挂网络响应拦截） */
 async function acquirePage(ctx) {
   const pages = ctx.context.pages();
   const page = pages.find((p) => !p.isClosed()) || (await ctx.context.newPage());
   ctx.page = page;
+  installResponseCapture(page, log);
   return page;
 }
 
@@ -152,6 +154,7 @@ async function startBrowser(accountId, userDataDir) {
   });
   const pages = context.pages();
   const page = pages[0] || (await context.newPage());
+  installResponseCapture(page, log);
   contexts.set(accountId, { context, page, userDataDir: absoluteDir });
   log('info', `账号 ${accountId} 浏览器已启动`);
   return { ok: true };
@@ -305,29 +308,35 @@ async function probeAndExtract(cmd) {
 
   log('info', `页面探测: url=${probe.url} 文件输入=${probe.fileInputs} 输入框=${probe.textboxes} 疑似已登录=${probe.likelyLoggedIn}`);
 
-  // 1. 优先抽取无水印原图（image_ori_raw，内嵌于页面 JSON 中）
-  const { parseImageOriRaws, extractImagesFromDom, dedupeGeneratedImages } = require('./extractor');
+  // 1. 优先：网络拦截缓存的无水印原图
+  //    （/chat/completion EventStream 与 /im/chain/single 消息链快照中 creations 的 image.image_ori_raw）
+  const { parseImageOriRaws } = require('./extractor');
   let rawImages = [];
   try {
-    const html = await page.content();
-    rawImages = parseImageOriRaws(html);
-    log('info', `image_ori_raw 解析到 ${rawImages.length} 张无水印原图`);
+    rawImages = getCapturedImages(page);
+    if (rawImages.length) {
+      log('info', `网络拦截缓存中找到 ${rawImages.length} 张无水印原图`);
+    }
   } catch (err) {
-    log('warn', `image_ori_raw 解析失败: ${err.message}`);
+    log('warn', `读取网络拦截缓存失败: ${err.message}`);
   }
 
-  // 2. 兜底：DOM 扫描 /rc_gen_image/（去重 + 高清优先），用于无内嵌 JSON 的情况
+  // 2. 次选：内嵌于页面静态 JSON 中的 image_ori_raw（分享页/偶发嵌入场景）
+  //    注意：在线聊天页静态 HTML 仅骨架（messages 为空），此路径通常 0 命中，仅作兜底
   if (rawImages.length === 0) {
     try {
-      const dom = await extractImagesFromDom(page);
-      const gen = dom.filter((img) => img.url.includes('/rc_gen_image/'));
-      // 同一底图有缩略图（cthumb）与高清图（cgen）两种 rendition：按文件标识去重，高清优先
-      rawImages = dedupeGeneratedImages(gen);
-      log('info', `DOM 兜底提取到 ${rawImages.length} 张生成图（已按文件标识去重，高清优先）`);
+      const html = await page.content();
+      rawImages = parseImageOriRaws(html);
+      if (rawImages.length) {
+        log('info', `image_ori_raw 解析到 ${rawImages.length} 张无水印原图`);
+      } else {
+        log('info', 'image_ori_raw 页面内嵌解析 0 张（聊天页符合预期：消息流不内嵌于静态 HTML）');
+      }
     } catch (err) {
-      log('warn', `DOM 兜底提取失败: ${err.message}`);
+      log('warn', `image_ori_raw 解析失败: ${err.message}`);
     }
   }
+  // 3. 绝不回退到 DOM <img>：cgen/cthumb rendition 带「豆包AI生成」水印，宁可停下等人工
   log('info', `最终提取 ${rawImages.length} 张生成图片`);
 
   const roundDir = cmd.round_dir ? path.resolve(cmd.round_dir) : null;
@@ -353,11 +362,12 @@ async function probeAndExtract(cmd) {
 
     return {
       ok: false,
-      reason: 'no_generated_images',
+      reason: 'no_original_image',
       probe,
       images: [],
       round_dir: roundDir,
-      message: '页面未发现生成图片',
+      captured_count: (() => { try { return getCapturedImages(page).length; } catch (_) { return 0; } })(),
+      message: '未捕获到无水印原图（网络拦截与页面内嵌 JSON 均未命中）。已停止以避免下载水印展示图；请查看诊断信息，或确认页面已生成完成后重试。',
     };
   }
 
@@ -617,6 +627,8 @@ async function generateImagesInner(cmd) {
     return { ok: false, reason: 'browser_not_started' };
   }
   const page = await acquirePage(ctx);
+  // 新一轮生成：清空网络拦截缓存，避免上一轮的原图混入本轮提取
+  clearCaptured(page);
 
   const projectRoot = path.resolve(cmd.project_root || '.');
   const diagDir = path.join(projectRoot, 'output', 'diagnostics');

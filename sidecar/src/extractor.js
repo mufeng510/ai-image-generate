@@ -1,15 +1,14 @@
 /**
  * sidecar/src/extractor.js
  *
- * 基于 ihmily/doubao-nomark 油猴脚本核心提取逻辑（MIT 许可），改写为 Node.js + Playwright DOM 扫描。
- *
- * 核心数据源：页面渲染的  标签 src 属性。
- * 筛选规则（对应脚本的图片捕获逻辑）：
- *   - 只保留 tos-cn-i-a9rns2rl98 路径的图片资源 URL（豆包图片生成服务）
- *   - 排除 /icon/、action_bar_icon、.svg 等 UI 资源
- *   - 按 URL 身份（origin+pathname，去掉查询参数）去重，避免同一张图片重复下载
- *
- * 适用场景：豆包对话页（单页应用，切换对话不触发 /im/chain/single 网络请求，故以 DOM 提取为主）。
+ * 2.1.4 起：主流程（probeAndExtract）取「无水印原图 image_ori_raw」改为走网络拦截
+ * （见 ./response-capture.js：/chat/completion EventStream + /im/chain/single 消息链快照），
+ * 本模块保留：
+ *   - parseImageOriRaws：页面静态内嵌 JSON 中的 image_ori_raw 正则解析（兜底，聊天页通常 0 命中）；
+ *   - generatedImageKey / dedupeGeneratedImages / decodeUnicodeEscapes 等共享工具；
+ *   - extractImagesFromDom / extractAndSaveImages：DOM <img> 扫描（cgen/cthumb 展示 rendition，
+ *     带「豆包AI生成」水印）。主流程不再调用；仅保留供离线测试与历史兼容，禁止用于下载交付。
+ * 适用场景：豆包对话页（单页应用，消息快照不内嵌于静态 HTML）。
  */
 
 'use strict';

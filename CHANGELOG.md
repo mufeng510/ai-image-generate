@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### 修复
+
+- 修复下载的生成图带「豆包AI生成」水印的问题（2026-11-11，用户报告下载图带水印 + 实测 `20261110_113417_631` 输出）：根因是 `probeAndExtract` 用 `page.content()` 正则找 `image_ori_raw` 内嵌 JSON——聊天页消息快照不内嵌于静态 HTML（仅骨架，`messages: []`），历史库 85 张 `verified` 图片中 84 张实际走 DOM 兜底抓到渲染用 `<img>` 的 `cgen_lwm3`/`cgen_dwm3`/`cthumb_*` rendition（豆包对展示 rendition 烘焙水印），仅 1 张走原图路径。改为按 ihmily/doubao-nomark 扩展（MIT）的方式做网络拦截：新增 `sidecar/src/response-capture.js`，`page.on('response')` 捕获 `/chat/completion`（EventStream，解析 `data:` 行的 `patch_op`/`event_data`）与 `/im/chain/single`（`pull_singe_chain_downlink_body.messages[].content_block`），从 creations 取 `creation.image.image_ori_raw.url`（`/rc_gen_image/` + `image_raw` 过滤、底图 key 去重、PNG>JPG>HEIC>WEBP 优先）。`probeAndExtract` 改为「网络拦截缓存 → 静态内嵌 JSON 次选」，**取不到原图时直接 `no_original_image` 报错停下**（诊断照旧落盘，Rust 侧映射为 `needs_manual_intervention`），不再静默下载水印图；DOM `<img>` 扫描路径从主流程移除（`extractor.js` 保留函数仅供离线测试）。新增 `sidecar/src/response-capture.test.js`（12 例，含 headless Chromium route-mock 的拦截接线测试，无浏览器时接线用例跳过），已接入 `scripts/run-tests.ps1`；新一轮 `generate_images` 开始时清空捕获缓存，避免跨轮混入。
+- 已知限制：需要真实豆包账号生图验证端到端无水印落库（本次仅离线/接线验证）；若 Doubao 调整 `/chat/completion` 或 `/im/chain/single` 的 creations 结构，提取会返回 `no_original_image`（宁停不坏图）。
+
+### 验证
+
+- `scripts/run-tests.ps1` 全绿（exit 0）：`sidecar: response-capture` 12/12（含 headless Chromium 拦截 `/chat/completion` + `/im/chain/single` 接线用例）、`sidecar: extractor` 5/5、`sidecar: smoke` 19/19、Rust 54/54、`tsc --noEmit`、`vite build`；缺图/水印场景未对真实豆包生图验证（需真实额度）。
+
 ### 验证
 
 - 应用更新端到端闭环验证（B13，2026-11-09，用户授权发布 v1.3.0）：CI Release run 全绿（20m17s），GitHub Release v1.3.0 发布（NSIS 247MB+sig、MSI 343MB+sig、latest.json 三目标）；本机装机版（1.0.0，与 dev 共享 app.db）→ 设置页「检查更新」发现 1.3.0 →「下载并安装」→ 安装程序静默完成 → 应用自动重启；设置页显示 1.3.0；更新前后数据快照逐项一致（app.db 294912 B、tasks 20、task_images verified 41、execution_logs 236、accounts 及计数/状态、cursor=6、账号目录 7506 文件/563 MB、输出根 208 文件/148 MB 全一致）。验收 #21 ✅。

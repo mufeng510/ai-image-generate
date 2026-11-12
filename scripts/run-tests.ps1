@@ -26,6 +26,7 @@ Invoke-Step 'sidecar: pool' { node sidecar/src/pool.js }
 Invoke-Step 'sidecar: scanner' { node sidecar/src/scanner.test.js }
 Invoke-Step 'sidecar: detectors' { node sidecar/src/detectors.test.js }
 Invoke-Step 'sidecar: extractor (DOM 兜底去重)' { node sidecar/src/extractor.test.js }
+Invoke-Step 'sidecar: response-capture (网络拦截)' { node sidecar/src/response-capture.test.js }
 Invoke-Step 'sidecar: overlays (headless chromium)' { node sidecar/src/overlays.test.js }
 Invoke-Step 'Rust unit tests' {
     Push-Location src-tauri
