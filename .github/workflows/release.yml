@@ -41,9 +41,9 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
           releaseBody: |-
-            v1.4.0（2026-11-09）——见 CHANGELOG.md 的 [v1.4.0] 段。
+            v1.5.0（2026-11-12）——见 CHANGELOG.md 的 [v1.5.0] 段。
 
-            主要内容：生成完成按「预期张数」等待（全局默认 5、项目可覆盖；未满且不再增长则按已出张数继续）；提取不足自动重提取并按 identity 合并；缺图轮次标注「部分成功」并继续后续轮次；输出目录按任务归档（output/<任务名>/<时间戳>/）；任务结束（完成/失败/取消）自动关闭浏览器；设置页新增「每轮预期生成张数」、项目级覆盖、轮次详情成功/总数按预期显示。
+            主要内容：修复下载图片带「豆包AI生成」水印的问题——改为按 ihmily/doubao-nomark 扩展（MIT）的方式做网络拦截（/chat/completion + /im/chain/single 拦截 creations，取 creation.image.image_ori_raw 无水印原图）；取不到原图时停下等人工处理（needs_manual_intervention），不再静默下载水印展示图；2026-11-12 真实生图实测 5/5 无水印。设置页新增开关「下载完成后删除对应豆包会话（不可恢复）」（默认关闭，仅完整下载并校验的轮次才删）；Windows 下不再弹出 Node 控制台窗口。
 
             安装包自带内置运行时，安装后即可使用。
           releaseDraft: false
