@@ -61,6 +61,8 @@ cargo tauri build
 
 运行时通过 `scripts/fetch-runtime.ps1` 下载（Node.js v22.20.0 win-x64 portable zip + `playwright install chromium`）。`npm run tauri build` 的 `beforeBuildCommand` 会自动执行该脚本；CI Release workflow 也会先执行它再执行 `tauri-action`。`runtime/` 已加入 `.gitignore`，不提交。
 
+本地只跑离线校验（`cargo test` / `scripts/run-tests.ps1`）时，Tauri 构建脚本仍会检查 `bundle.resources` 里的路径是否存在。若本机没有下载运行时，可先建两个空目录占位即可通过编译：`sidecar/node_modules/` 与 `runtime/`（均被 `.gitignore` 忽略）；前端校验还需先执行 `npm install`。真实打包/运行仍须用 `scripts/fetch-runtime.ps1` 拉取完整运行时。
+
 ## 发布（Release）与签名
 
 ### 更新签名（ed25519，免费，必需）

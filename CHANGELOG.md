@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### 变更
+
+- 新建项目不再填写路径：以设置页「项目根目录」为工作区，按项目名称创建同名文件夹（含 `references/`、`output/`）；同名文件夹已存在、工作区未配置或名称含非法字符时给出明确提示。
+- 导入项目改为从工作区子文件夹列表中选择（新增 `project_import_candidates` 命令），已导入的文件夹不再列出；仅允许导入配置根目录下的文件夹。
+- 重命名项目时同步移动本地文件夹，并在事务内改写 `projects.prompt_path`、`task_rounds.output_dir`、`task_images.saved_path`、`image_pool_records.image_path` 中指向旧目录的绝对路径；目标文件夹已存在、项目有未结束任务时拒绝改名；数据库失败时回滚文件夹移动。
+
+### 验证
+
+- `cargo test` 56/56（新增 `project_folder_name_*` 2 例）、`npx tsc --noEmit`、`npm run build` 均通过。
+
 ## [v1.5.0] - 2026-11-12
 
 ### 新增

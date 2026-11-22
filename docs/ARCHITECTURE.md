@@ -226,10 +226,11 @@ ai-image-generate/
 | Command | 说明 | 参数 | 返回 |
 |---|---|---|---|
 | `project_list` | 列出项目 | - | `Vec<Project>` |
-| `project_create` | 创建项目 | `name, path` | `Project` |
+| `project_create` | 创建项目（在设置页「项目根目录」下按名称建同名文件夹） | `name` | `Project` |
 | `project_import` | 导入项目 | `path` | `Project` |
+| `project_import_candidates` | 列出工作区根目录下可导入的子文件夹（已导入的排除） | - | `Vec<ProjectImportCandidate>` |
 | `project_delete` | 删除项目 | `id` | `Result` |
-| `project_update` | 修改项目名称 | `id, name` | `Result` |
+| `project_rename` | 重命名项目：同步移动磁盘文件夹，并改写库内指向旧目录的绝对路径；存在未结束任务时拒绝 | `id, name` | `Project` |
 | `project_prompt_save` | 保存提示词 | `project_id, content` | `Result` |
 | `account_list` | 列出账号 | - | `Vec<Account>` |
 | `account_add` | 添加账号 | `name` | `Account` |

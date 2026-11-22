@@ -6,6 +6,7 @@ import {
   projectCreate,
   projectDelete,
   projectImport,
+  projectImportCandidates,
   projectRename,
   projectOpenFolder,
   projectPromptGet,
@@ -27,6 +28,7 @@ import {
   GEN_RATIO_OPTIONS,
   GEN_STYLE_OPTIONS,
   type Project,
+  type ProjectImportCandidate,
   type ProjectReferenceStats,
   type ProjectHistoryItem,
   type ReferenceItem,
@@ -96,8 +98,11 @@ export default function ProjectsPage() {
   const STATUS_LABELS = useTaskStatusLabels()
   const [projects, setProjects] = useState<Project[]>([])
   const [name, setName] = useState('')
-  const [rootPath, setRootPath] = useState('')
   const [loading, setLoading] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [importCandidates, setImportCandidates] = useState<ProjectImportCandidate[]>([])
+  const [importLoading, setImportLoading] = useState(false)
+  const [importingPath, setImportingPath] = useState<string | null>(null)
 
   const [stats, setStats] = useState<Record<number, ProjectReferenceStats>>({})
   const [refItems, setRefItems] = useState<Record<number, ReferenceItem[]>>({})
@@ -136,13 +141,13 @@ export default function ProjectsPage() {
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
-    if (!name.trim() || !rootPath.trim()) return
+    const trimmed = name.trim()
+    if (!trimmed) return
     setLoading(true)
     try {
-      const p = await projectCreate(name.trim(), rootPath.trim())
+      const p = await projectCreate(trimmed)
       setProjects([p, ...projects])
       setName('')
-      setRootPath('')
     } catch (e) {
       alert(t('projects.createFailed') + e)
     } finally {
@@ -150,21 +155,31 @@ export default function ProjectsPage() {
     }
   }
 
-  async function handleImport() {
-    if (!rootPath.trim()) {
-      alert(t('projects.enterPathToImport'))
-      return
-    }
-    setLoading(true)
+  /** 打开导入弹窗：列出工作区根目录下可导入的子文件夹 */
+  async function handleOpenImport() {
+    setImportOpen(true)
+    setImportCandidates([])
+    setImportLoading(true)
     try {
-      const p = await projectImport(name.trim() || null, rootPath.trim())
+      setImportCandidates(await projectImportCandidates())
+    } catch (e) {
+      alert(t('projects.importCandidatesFailed') + e)
+      setImportOpen(false)
+    } finally {
+      setImportLoading(false)
+    }
+  }
+
+  async function handleImportCandidate(c: ProjectImportCandidate) {
+    setImportingPath(c.path)
+    try {
+      const p = await projectImport(c.name, c.path)
       setProjects([p, ...projects])
-      setName('')
-      setRootPath('')
+      setImportCandidates((prev) => prev.filter((x) => x.path !== c.path))
     } catch (e) {
       alert(t('projects.importFailed') + e)
     } finally {
-      setLoading(false)
+      setImportingPath(null)
     }
   }
 
@@ -187,8 +202,8 @@ export default function ProjectsPage() {
       return
     }
     try {
-      await projectRename(p.id!, next.trim())
-      setProjects(projects.map((x) => (x.id === p.id ? { ...x, name: next.trim() } : x)))
+      const updated = await projectRename(p.id!, next.trim())
+      setProjects(projects.map((x) => (x.id === p.id ? updated : x)))
     } catch (e) {
       alert(t('projects.renameFailed') + e)
     }
@@ -392,22 +407,16 @@ export default function ProjectsPage() {
           onChange={(e) => setName(e.target.value)}
           style={inputStyle}
         />
-        <input
-          placeholder={t('projects.placeholderPath')}
-          value={rootPath}
-          onChange={(e) => setRootPath(e.target.value)}
-          style={{ ...inputStyle, minWidth: '260px' }}
-        />
         <button
           type="submit"
-          disabled={loading}
-          style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: loading ? 'not-allowed' : 'pointer' }}
+          disabled={loading || !name.trim()}
+          style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: loading || !name.trim() ? 'not-allowed' : 'pointer' }}
         >
           {loading ? t('btn.create') + '...' : t('btn.newProject')}
         </button>
         <button
           type="button"
-          onClick={handleImport}
+          onClick={handleOpenImport}
           disabled={loading}
           style={{ padding: '8px 16px', background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: '6px', cursor: loading ? 'not-allowed' : 'pointer' }}
         >
@@ -415,7 +424,7 @@ export default function ProjectsPage() {
         </button>
       </form>
       <p style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '12px' }}>
-        {t('projects.importHint')}
+        {t('projects.createHint')}
       </p>
 
       <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: '8px', overflow: 'hidden' }}>
@@ -568,6 +577,43 @@ export default function ProjectsPage() {
           )}
         </tbody>
       </table>
+
+      {importOpen && (
+        <div style={modalOverlay} onClick={() => setImportOpen(false)}>
+          <div style={{ ...modalCard, width: 'min(520px, 94vw)' }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '4px' }}>{t('projects.importTitle')}</h3>
+            <p style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '12px' }}>{t('projects.importModalNote')}</p>
+            {importLoading ? (
+              <div style={{ padding: '16px', fontSize: '12px', color: '#9ca3af' }}>{t('common.loading')}</div>
+            ) : importCandidates.length === 0 ? (
+              <div style={{ padding: '16px', fontSize: '12px', color: '#9ca3af' }}>{t('projects.importEmpty')}</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '50vh', overflow: 'auto' }}>
+                {importCandidates.map((c) => (
+                  <div key={c.path} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px', border: '1px solid #e5e5e5', borderRadius: '6px' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '13px', fontWeight: '500' }}>{c.name}</div>
+                      <div style={{ fontSize: '11px', color: '#9ca3af', wordBreak: 'break-all' }}>{c.path}</div>
+                    </div>
+                    <button
+                      onClick={() => handleImportCandidate(c)}
+                      disabled={importingPath !== null}
+                      style={{ padding: '6px 12px', background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: '6px', cursor: importingPath !== null ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
+                    >
+                      {importingPath === c.path ? t('btn.import') + '...' : t('btn.import')}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
+              <button onClick={() => setImportOpen(false)} style={{ ...actionStyle, marginRight: 0, padding: '8px 16px' }}>
+                {t('common.close')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {history && (
         <div style={modalOverlay} onClick={() => setHistory(null)}>

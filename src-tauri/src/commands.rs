@@ -41,23 +41,46 @@ pub async fn project_list() -> Result<Vec<Project>, String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn project_create(name: String, root_path: String) -> Result<Project, String> {
-    let conn = get_connection().map_err(|e| e.to_string())?;
+pub async fn project_create(name: String) -> Result<Project, String> {
+    let name = validate_project_folder_name(&name)?;
+    // 使用设置页配置的「项目根目录」作为工作区，按项目名建同名文件夹
+    let workspace = configured_workspace_root()?;
+    let root = workspace.join(&name);
+    if root.exists() {
+        return Err(format!(
+            "同名文件夹已存在：{}，请换一个项目名称",
+            root.display()
+        ));
+    }
+    let root_str = root.to_string_lossy().to_string();
+    let conn = get_connection()?;
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM projects WHERE lower(root_path) = lower(?1)",
+            [&root_str],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if exists > 0 {
+        return Err("该目录已在项目列表中".to_string());
+    }
+
+    std::fs::create_dir_all(root.join("references"))
+        .map_err(|e| format!("创建参考图目录失败：{}", e))?;
+    std::fs::create_dir_all(root.join("output"))
+        .map_err(|e| format!("创建输出目录失败：{}", e))?;
+
     let now = Utc::now().to_rfc3339();
-    // 创建项目根目录与参考图片目录，便于用户直接放入参考图片
-    let root = std::path::PathBuf::from(&root_path);
-    let _ = std::fs::create_dir_all(root.join("references"));
-    let _ = std::fs::create_dir_all(root.join("output"));
     conn.execute(
         "INSERT INTO projects (name, root_path, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
-        rusqlite::params![name, root_path, now],
+        rusqlite::params![name, root_str, now],
     )
     .map_err(|e| e.to_string())?;
     let last_id = conn.last_insert_rowid();
     Ok(Project {
         id: Some(last_id),
         name,
-        root_path,
+        root_path: root_str,
         prompt_path: None,
         gen_params_json: None,
         created_at: Some(now.clone()),
@@ -107,10 +130,116 @@ fn normalize_project_root(root_path: &str) -> Result<std::path::PathBuf, String>
     Ok(display_path_buf(canonical))
 }
 
+/** 校验项目名称可作为工作区下的单个文件夹名。 */
+fn validate_project_folder_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("项目名称不能为空".to_string());
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err("项目名称不能为 . 或 ..".to_string());
+    }
+    if trimmed.chars().any(|c| c == '/' || c == '\\') {
+        return Err("项目名称不能包含路径分隔符".to_string());
+    }
+    if trimmed.ends_with('.') {
+        return Err("项目名称不能以点结尾".to_string());
+    }
+    if trimmed
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+    {
+        return Err("项目名称包含非法字符".to_string());
+    }
+    let base = trimmed.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved_device = matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (base.len() == 4
+            && (base.starts_with("COM") || base.starts_with("LPT"))
+            && base.as_bytes()[3].is_ascii_digit()
+            && base.as_bytes()[3] != b'0');
+    if reserved_device {
+        return Err("项目名称是系统保留名称".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+/** 读取设置页配置的「项目根目录」，并要求其存在且是目录。 */
+fn configured_workspace_root() -> Result<std::path::PathBuf, String> {
+    let conn = get_connection()?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = 'project_root'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let raw = raw
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "请先在设置页配置项目根目录".to_string())?;
+    normalize_project_root(&raw)
+}
+
+/** 导入候选项：配置的工作区根目录下的子文件夹。 */
+#[derive(serde::Serialize)]
+pub struct ProjectImportCandidate {
+    pub name: String,
+    pub path: String,
+}
+
+/** 列出工作区根目录下可导入的子文件夹（已在项目列表中的排除）。 */
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_import_candidates() -> Result<Vec<ProjectImportCandidate>, String> {
+    let workspace = configured_workspace_root()?;
+    let conn = get_connection()?;
+    let mut imported = std::collections::HashSet::new();
+    let mut stmt = conn
+        .prepare("SELECT root_path FROM projects")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        if let Ok(path) = row {
+            imported.insert(path.to_lowercase());
+        }
+    }
+
+    let mut candidates = Vec::new();
+    let entries =
+        std::fs::read_dir(&workspace).map_err(|e| format!("读取项目根目录失败：{}", e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("读取子目录失败：{}", e))?;
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let path = match entry.path().canonicalize() {
+            Ok(p) => display_path_buf(p),
+            Err(_) => entry.path(),
+        };
+        let path_str = path.to_string_lossy().to_string();
+        if imported.contains(&path_str.to_lowercase()) {
+            continue;
+        }
+        candidates.push(ProjectImportCandidate {
+            name,
+            path: path_str,
+        });
+    }
+    candidates.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(candidates)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn project_import(name: Option<String>, root_path: String) -> Result<Project, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let root = normalize_project_root(&root_path)?;
+    // 只允许导入设置页配置的工作区内的文件夹
+    let workspace = configured_workspace_root()?;
+    if root == workspace || !root.starts_with(&workspace) {
+        return Err("只能导入项目根目录下的文件夹".to_string());
+    }
     let root_str = root.to_string_lossy().to_string();
 
     let exists: i64 = conn
@@ -161,24 +290,141 @@ pub async fn project_import(name: Option<String>, root_path: String) -> Result<P
     })
 }
 
-#[tauri::command(rename_all = "snake_case")]
-pub async fn project_rename(id: i64, name: String) -> Result<(), String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("项目名称不能为空".to_string());
+/// 把绝对路径的旧前缀替换为新前缀（按目录边界匹配，大小写不敏感）。
+fn rewrite_path_prefix(path: &str, old: &str, new: &str) -> Option<String> {
+    if path.len() < old.len() {
+        return None;
     }
-    let conn = get_connection().map_err(|e| e.to_string())?;
-    let now = Utc::now().to_rfc3339();
-    let affected = conn
-        .execute(
-            "UPDATE projects SET name = ?1, updated_at = ?2 WHERE id = ?3",
-            rusqlite::params![name, now, id],
-        )
-        .map_err(|e| e.to_string())?;
-    if affected == 0 {
-        return Err("项目不存在".to_string());
+    let (prefix, rest) = path.split_at(old.len());
+    if !prefix.eq_ignore_ascii_case(old) {
+        return None;
+    }
+    if !(rest.is_empty() || rest.starts_with('\\') || rest.starts_with('/')) {
+        return None;
+    }
+    Some(format!("{}{}", new, rest))
+}
+
+/// 批量改写某张表 id + 路径列中指向旧项目目录的绝对路径。
+fn rewrite_path_column(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    column: &str,
+    old: &str,
+    new: &str,
+) -> Result<(), String> {
+    let select_sql = format!("SELECT id, {} FROM {} WHERE {} IS NOT NULL", column, table, column);
+    let mut select = tx.prepare(&select_sql).map_err(|e| e.to_string())?;
+    let rows: Vec<(i64, String)> = select
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(select);
+    let update_sql = format!("UPDATE {} SET {} = ?1 WHERE id = ?2", table, column);
+    let mut update = tx.prepare(&update_sql).map_err(|e| e.to_string())?;
+    for (id, path) in rows {
+        if let Some(next) = rewrite_path_prefix(&path, old, new) {
+            update
+                .execute(rusqlite::params![next, id])
+                .map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_rename(id: i64, name: String) -> Result<Project, String> {
+    let name = validate_project_folder_name(&name)?;
+    let mut conn = get_connection()?;
+
+    let old_root_str: String = conn
+        .query_row("SELECT root_path FROM projects WHERE id = ?1", [id], |row| row.get(0))
+        .map_err(|_| "项目不存在".to_string())?;
+    let old_root = std::path::PathBuf::from(&old_root_str);
+    if !old_root.is_dir() {
+        return Err(format!("项目目录不存在或不可访问：{}", old_root_str));
+    }
+
+    // 运行中的任务持有旧路径，改名会让它们失效
+    let unfinished: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE project_id = ?1 AND status NOT IN ('completed','failed','cancelled')",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if unfinished > 0 {
+        return Err(format!("该项目有 {} 个未结束任务，请先完成或取消后再重命名", unfinished));
+    }
+
+    let parent = old_root
+        .parent()
+        .ok_or_else(|| "无法确定项目目录的父目录".to_string())?;
+    let new_root = parent.join(&name);
+    let new_root_str = new_root.to_string_lossy().to_string();
+    let same_root = new_root == old_root;
+
+    if !same_root {
+        if new_root.exists() {
+            return Err(format!("目标文件夹已存在：{}，请换一个名称", new_root.display()));
+        }
+        let conflict: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE lower(root_path) = lower(?1) AND id <> ?2",
+                rusqlite::params![new_root_str, id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if conflict > 0 {
+            return Err("目标目录已属于其他项目".to_string());
+        }
+        std::fs::rename(&old_root, &new_root)
+            .map_err(|e| format!("重命名项目文件夹失败：{}", e))?;
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let db_result = (|| -> Result<(), String> {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE projects SET name = ?1, root_path = ?2, updated_at = ?3 WHERE id = ?4",
+            rusqlite::params![name, new_root_str, now, id],
+        )
+        .map_err(|e| e.to_string())?;
+        if !same_root {
+            rewrite_path_column(&tx, "projects", "prompt_path", &old_root_str, &new_root_str)?;
+            rewrite_path_column(&tx, "task_rounds", "output_dir", &old_root_str, &new_root_str)?;
+            rewrite_path_column(&tx, "task_images", "saved_path", &old_root_str, &new_root_str)?;
+            rewrite_path_column(&tx, "image_pool_records", "image_path", &old_root_str, &new_root_str)?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+
+    if let Err(e) = db_result {
+        // 数据库失败时回滚文件夹改名，避免磁盘与记录不一致
+        if !same_root && new_root.exists() && !old_root.exists() {
+            let _ = std::fs::rename(&new_root, &old_root);
+        }
+        return Err(e);
+    }
+
+    conn.query_row(
+        "SELECT id, name, root_path, prompt_path, gen_params_json, created_at, updated_at FROM projects WHERE id = ?1",
+        [id],
+        |row| {
+            Ok(Project {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                root_path: row.get(2)?,
+                prompt_path: row.get(3)?,
+                gen_params_json: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
 }
 
 /** 读取项目根目录，并要求目录仍然存在 */
@@ -2133,7 +2379,7 @@ pub async fn notification_clear() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{make_task_name, csv_field, csv_cell, render_logs_csv, LogEntry};
+    use super::{make_task_name, csv_field, csv_cell, render_logs_csv, rewrite_path_prefix, validate_project_folder_name, LogEntry};
 
     #[test]
     fn csv_field_escapes_comma_quote_and_newline() {
@@ -2154,6 +2400,48 @@ mod tests {
         assert_eq!(csv_cell("a,b"), "\"a,b\"");
     }
 
+
+    #[test]
+    fn project_folder_name_accepts_normal_names() {
+        assert_eq!(validate_project_folder_name("  奶瓶收纳盒生图  ").unwrap(), "奶瓶收纳盒生图");
+        assert_eq!(validate_project_folder_name("my-project_v2").unwrap(), "my-project_v2");
+        assert_eq!(validate_project_folder_name("项目.备份").unwrap(), "项目.备份");
+    }
+
+    #[test]
+    fn project_folder_name_rejects_path_and_illegal_names() {
+        assert!(validate_project_folder_name("  ").is_err());
+        assert!(validate_project_folder_name(".").is_err());
+        assert!(validate_project_folder_name("..").is_err());
+        assert!(validate_project_folder_name("a/b").is_err());
+        assert!(validate_project_folder_name("a\\b").is_err());
+        assert!(validate_project_folder_name("a:b*c?d\"e<f>g|h").is_err());
+        assert!(validate_project_folder_name("项目.").is_err());
+        assert!(validate_project_folder_name("CON").is_err());
+        assert!(validate_project_folder_name("com1.txt").is_err());
+        assert!(validate_project_folder_name("LPT9").is_err());
+    }
+
+    #[test]
+    fn rewrite_path_prefix_only_matches_whole_directories() {
+        let old = r"D:\work\旧项目";
+        let new = r"D:\work\新项目";
+        assert_eq!(
+            rewrite_path_prefix(r"D:\work\旧项目\references\a.jpg", old, new),
+            Some(r"D:\work\新项目\references\a.jpg".to_string())
+        );
+        assert_eq!(
+            rewrite_path_prefix(old, old, new),
+            Some(new.to_string())
+        );
+        assert_eq!(
+            rewrite_path_prefix(r"D:\WORK\旧项目\output", old, new).is_some(),
+            true,
+            "Windows 路径大小写不敏感"
+        );
+        assert_eq!(rewrite_path_prefix(r"D:\work\旧项目2\a.jpg", old, new), None);
+        assert_eq!(rewrite_path_prefix(r"D:\other\a.jpg", old, new), None);
+    }
 
     #[test]
     fn make_task_name_uses_trimmed_project_and_date() {

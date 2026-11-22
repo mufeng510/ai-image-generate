@@ -191,8 +191,19 @@ export async function projectList(): Promise<Project[]> {
   return invoke('project_list')
 }
 
-export async function projectCreate(name: string, root_path: string): Promise<Project> {
-  return invoke('project_create', { name, root_path })
+export interface ProjectImportCandidate {
+  name: string
+  path: string
+}
+
+/** 新建项目：后端在设置页配置的工作区下按名称创建同名文件夹 */
+export async function projectCreate(name: string): Promise<Project> {
+  return invoke('project_create', { name })
+}
+
+/** 列出工作区根目录下可导入的子文件夹（已导入的由后端排除） */
+export async function projectImportCandidates(): Promise<ProjectImportCandidate[]> {
+  return invoke('project_import_candidates')
 }
 
 export async function projectDelete(id: number): Promise<void> {
@@ -219,7 +230,8 @@ export async function projectImport(name: string | null, root_path: string): Pro
   return invoke('project_import', { name, root_path })
 }
 
-export async function projectRename(id: number, name: string): Promise<void> {
+/** 重命名项目：后端同步移动磁盘文件夹并返回更新后的项目（含新路径） */
+export async function projectRename(id: number, name: string): Promise<Project> {
   return invoke('project_rename', { id, name })
 }
 
