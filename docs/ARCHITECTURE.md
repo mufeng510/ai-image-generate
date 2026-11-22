@@ -237,7 +237,7 @@ ai-image-generate/
 | `account_delete` | 删除账号 | `id` | `Result` |
 | `account_reorder` | 调整顺序 | `ids` | `Result` |
 | `account_set_threshold` | 设置阈值 | `id, threshold` | `Result` |
-| `task_create` | 创建任务 | `project_id, account_id`（任务名自动生成为“项目名-日期”） | `Task` |
+| `task_create` | 创建任务（开启调度闸门；队列空闲时自动开始，否则按创建顺序排队） | `project_id, account_id, rounds`（任务名自动生成为“项目名-日期”） | `Task` |
 | `task_start` | 开始任务 | `id` | `Result` |
 | `task_pause` | 暂停任务 | `id` | `Result` |
 | `task_resume` | 继续任务 | `id` | `Result` |

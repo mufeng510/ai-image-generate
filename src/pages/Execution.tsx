@@ -233,6 +233,9 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
           {t('tasks.createTask')}
         </button>
       </form>
+      <p style={{ fontSize: '12px', color: '#9ca3af', margin: '-12px 0 0' }}>
+        {t('tasks.createHint')}
+      </p>
 
       <div style={{ background: '#fff', border: '1px solid #e5e5e5', borderRadius: '12px', overflow: 'hidden' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>

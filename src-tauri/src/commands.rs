@@ -1722,7 +1722,12 @@ fn make_task_name(project_name: &str) -> String {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn task_create(project_id: i64, account_id: Option<i64>, rounds: Option<i64>) -> Result<Task, String> {
+pub async fn task_create(
+    scheduler: State<'_, Arc<Scheduler>>,
+    project_id: i64,
+    account_id: Option<i64>,
+    rounds: Option<i64>,
+) -> Result<Task, String> {
     let total_rounds = rounds.unwrap_or(1).clamp(1, 999);
     let conn = get_connection().map_err(|e| e.to_string())?;
     let project_name: String = conn
@@ -1750,6 +1755,11 @@ pub async fn task_create(project_id: i64, account_id: Option<i64>, rounds: Optio
     )
     .map_err(|e| e.to_string())?;
     let last_id = conn.last_insert_rowid();
+
+    // 创建即入队：开启调度闸门；队列空闲时调度器下一轮立即拣取该任务，
+    // 已有任务执行中则保持 pending，按 created_at 顺序串行执行。
+    scheduler.enable_auto_run();
+
     Ok(Task {
         id: Some(last_id),
         name,
