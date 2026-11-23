@@ -41,9 +41,12 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
           releaseBody: |-
-            v1.5.0（2026-11-12）——见 CHANGELOG.md 的 [v1.5.0] 段。
+            v1.6.0（2026-11-23）——见 CHANGELOG.md 的 [v1.6.0] 段。
 
-            主要内容：修复下载图片带「豆包AI生成」水印的问题——改为按 ihmily/doubao-nomark 扩展（MIT）的方式做网络拦截（/chat/completion + /im/chain/single 拦截 creations，取 creation.image.image_ori_raw 无水印原图）；取不到原图时停下等人工处理（needs_manual_intervention），不再静默下载水印展示图；2026-11-12 真实生图实测 5/5 无水印。设置页新增开关「下载完成后删除对应豆包会话（不可恢复）」（默认关闭，仅完整下载并校验的轮次才删）；Windows 下不再弹出 Node 控制台窗口。
+            主要内容：
+            - 生成实况图片：任务详情页新增按钮，调用外部 AI Image Process CLI 把该任务所有轮次的图片批量转为 Apple Live Photo（JPG + MOV，本地动态）。需在设置页配置 AI Image Process 目录；产物输出到该软件自己的默认目录。隐藏图等步骤沿用 AI Image Process 自身设置，失败按其报错展示。
+            - 删除质量不好的图片：任务详情页每张图片右上角新增「删除」按钮，确认后删除磁盘文件与数据库记录并重算成功数（不可恢复）。
+            - 任务创建即入队、项目创建/导入基于默认工作区等前期改动一并发布。
 
             安装包自带内置运行时，安装后即可使用。
           releaseDraft: false

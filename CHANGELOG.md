@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v1.6.0] - 2026-11-23
+
+### 新增
+
+- **生成实况图片**：任务详情页新增「生成实况图片」按钮（与「打开目录」并排），调用外部 [AI Image Process](https://github.com/mufeng510/ai-image-process) CLI 把该任务所有轮次的图片批量转为 Apple Live Photo（JPG + MOV，本地动态）。设置页新增「AI Image Process 目录」配置项（含目录选择与「测试」按钮）；产物输出到该软件自己配置的默认目录，本软件不保留副本。隐藏图片等步骤沿用用户在 AI Image Process 中的设置，失败时按其报错原样展示。新增 `live_photo_generate` / `live_photo_probe` 命令、`live-photo-progress` / `live-photo-finished` 事件及 `live_photo.rs` 模块（含 CLI 路径解析、路径安全校验、后台子进程、通知）。详见 `docs/LIVE_PHOTO_INTEGRATION.md`。
+- **删除质量不好的图片**：任务详情页图片网格每张图右上角新增「删除」按钮，确认后同时删除磁盘文件与数据库记录并重算轮次成功数。新增 `task_image_delete` 命令，含「图片路径必须位于该轮次 output_dir 内」的安全校验。
+
 ### 变更
 
 - 创建任务即入队：队列空闲时自动开始（开启调度闸门，调度器下一轮拣取）；已有任务执行中时保持 `pending`，按创建顺序串行执行。任务队列页增加对应说明。
@@ -11,7 +18,8 @@
 
 ### 验证
 
-- `cargo test` 56/56（新增 `project_folder_name_*` 2 例）、`npx tsc --noEmit`、`npm run build` 均通过。
+- `cargo test` 60/60（新增 `live_photo::tests` 3 例）、`npm run build` 均通过。
+- 实况图片 CLI 实测：目录输入（含非图片文件）递归扫描正确；真实运行产出 JPG + MOV 配对，`--json-summary` 的 `outputs` 可解析；用本机真实 AIP 配置合并后 `--dry-run` 预检通过。
 
 ## [v1.5.0] - 2026-11-12
 
