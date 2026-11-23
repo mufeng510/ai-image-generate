@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { settingsGet, settingsSet, schedulerAutoRunGet, schedulerAutoRunSet, GEN_MODEL_OPTIONS, GEN_RATIO_OPTIONS, GEN_STYLE_OPTIONS } from '@/hooks/api'
+import { settingsGet, settingsSet, schedulerAutoRunGet, schedulerAutoRunSet, livePhotoProbe, GEN_MODEL_OPTIONS, GEN_RATIO_OPTIONS, GEN_STYLE_OPTIONS } from '@/hooks/api'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { useI18n } from '@/i18n'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification'
@@ -26,6 +27,8 @@ export default function SettingsPage() {
   const [defaultQuota, setDefaultQuota] = useState('0')
   const [expectedImages, setExpectedImages] = useState('5')
   const [deleteConversation, setDeleteConversation] = useState(false)
+  const [aipRootDir, setAipRootDir] = useState('')
+  const [probingLivePhoto, setProbingLivePhoto] = useState(false)
 
   async function load() {
     const v = await settingsGet('project_root')
@@ -52,6 +55,8 @@ export default function SettingsPage() {
     setExpectedImages(ei == null ? '5' : ei)
     const dc = await settingsGet('delete_conversation_after_download')
     setDeleteConversation(dc === 'true')
+    const aip = await settingsGet('aip_root_dir')
+    if (aip) setAipRootDir(aip)
     schedulerAutoRunGet().then(setAutoRunGate).catch(() => setAutoRunGate(false))
     getVersion().then(setVersion).catch(() => setVersion('unknown'))
   }
@@ -197,6 +202,27 @@ export default function SettingsPage() {
     }
   }
 
+  async function chooseAipRootDir() {
+    try {
+      const picked = await openDialog({ directory: true, multiple: false })
+      if (picked && typeof picked === 'string') setAipRootDir(picked)
+    } catch (e) {
+      alert(t('settings.aipProbeFail') + e)
+    }
+  }
+
+  async function probeAip() {
+    setProbingLivePhoto(true)
+    try {
+      const result = await livePhotoProbe()
+      alert(`${t('settings.aipProbeOk')}\nCLI: ${result.cli}\n${t('settings.aipOutputDir')}: ${result.output_dir}`)
+    } catch (e) {
+      alert(t('settings.aipProbeFail') + e)
+    } finally {
+      setProbingLivePhoto(false)
+    }
+  }
+
   return (
     <div style={{ padding: '24px' }}>
       <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '24px' }}>{t('nav.settings')}</h2>
@@ -208,6 +234,21 @@ export default function SettingsPage() {
             onChange={(e) => setProjectRoot(e.target.value)}
             style={{ width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
           />
+        </div>
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.aipRootDir')}</label>
+          <p style={{ fontSize: '12px', color: '#9ca3af', margin: '0 0 8px' }}>{t('settings.aipRootDirHint')}</p>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <input
+              value={aipRootDir}
+              onChange={(e) => setAipRootDir(e.target.value)}
+              placeholder={t('settings.aipRootDirPlaceholder')}
+              style={{ flex: '1 1 320px', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <button onClick={chooseAipRootDir} style={{ padding: '8px 14px', background: '#fff', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer' }}>{t('btn.browse')}</button>
+            <button onClick={() => saveKey('aip_root_dir', () => aipRootDir, setAipRootDir)} style={{ padding: '8px 14px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>{t('btn.save')}</button>
+            <button onClick={probeAip} disabled={probingLivePhoto} style={{ padding: '8px 14px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '6px', cursor: probingLivePhoto ? 'not-allowed' : 'pointer' }}>{probingLivePhoto ? t('settings.aipProbing') : t('settings.aipProbe')}</button>
+          </div>
         </div>
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.genParamsGlobal')}</label>

@@ -2018,6 +2018,77 @@ pub async fn task_list_images(round_id: i64) -> Result<Vec<TaskImage>, String> {
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// 删除单张生成图片（质量不好时快速清理）：同时删除磁盘文件与数据库记录，并重算轮次成功数。
+/// 路径必须位于该轮次的 output_dir 内，避免误删其他文件。不可逆，前端需先确认。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn task_image_delete(id: i64) -> Result<i64, String> {
+    let conn = get_connection()?;
+    let (saved_path, round_id): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT saved_path, task_round_id FROM task_images WHERE id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("图片记录不存在：{}", e))?;
+
+    let round_dir: Option<String> = conn
+        .query_row(
+            "SELECT output_dir FROM task_rounds WHERE id = ?1",
+            [round_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let round_dir = round_dir
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "该轮次没有输出目录，无法安全删除".to_string())?;
+
+    // 安全校验：saved_path 的直接父目录必须就是轮次输出目录
+    let path = saved_path
+        .filter(|s| !s.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| "该图片没有保存路径，无法删除文件".to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "图片路径无效".to_string())?;
+    let norm = |p: &std::path::Path| -> String {
+        p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_lowercase()
+    };
+    if norm(parent) != norm(std::path::Path::new(&round_dir)) {
+        return Err("图片路径不在该轮次目录内，拒绝删除".to_string());
+    }
+
+    // 文件不存在时仍允许清理数据库记录（幂等）
+    if path.is_file() {
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("删除磁盘文件失败：{}", e))?;
+    }
+
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM task_images WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    let success_count: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM task_images WHERE task_round_id = ?1 AND download_status = 'verified'",
+            [round_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    tx.execute(
+        "UPDATE task_rounds SET success_count = ?1 WHERE id = ?2",
+        rusqlite::params![success_count, round_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = tx.execute(
+        "INSERT INTO execution_logs (task_id, level, message, created_at) VALUES (NULL, 'info', ?1, ?2)",
+        rusqlite::params![
+            format!("删除图片 #{}（{}），轮次 #{} 剩余成功 {} 张", id, path.display(), round_id, success_count),
+            Utc::now().to_rfc3339()
+        ],
+    );
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(success_count)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn account_get(id: i64) -> Result<Option<Account>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
@@ -2385,6 +2456,49 @@ pub async fn notification_clear() -> Result<(), String> {
     conn.execute("DELETE FROM notifications", [])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// 启动「生成实况图片」：把任务文件夹下所有轮次图片交给 AI Image Process 转成实况图片。
+/// 同步完成所有校验后立即返回 job_id；CLI 在后台线程运行，进度/终态通过事件推送。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn live_photo_generate(app: AppHandle, task_id: i64) -> Result<String, String> {
+    if !crate::live_photo::try_acquire() {
+        return Err("已有实况图片任务在运行，请等待其完成".to_string());
+    }
+    let aip_root = settings_get("aip_root_dir".to_string()).await?.unwrap_or_default();
+    let prepared = match crate::live_photo::prepare(task_id, aip_root) {
+        Ok(p) => p,
+        Err(e) => {
+            crate::live_photo::release();
+            return Err(e);
+        }
+    };
+    let job_id = prepared.job_id.clone();
+    let app_for_thread = app.clone();
+    std::thread::spawn(move || {
+        let result = crate::live_photo::execute(&app_for_thread, prepared);
+        let _ = app_for_thread.emit("live-photo-finished", serde_json::json!(result));
+        crate::live_photo::write_notification(&result);
+        crate::live_photo::release();
+    });
+    Ok(job_id)
+}
+
+/// 设置页「测试」按钮：校验 AI Image Process 目录能找到 CLI 与默认输出目录。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn live_photo_probe() -> Result<serde_json::Value, String> {
+    let raw = settings_get("aip_root_dir".to_string()).await?.unwrap_or_default();
+    let root = std::path::PathBuf::from(raw.trim());
+    if root.as_os_str().is_empty() || !root.is_dir() {
+        return Err("请先在设置页配置有效的 AI Image Process 目录".to_string());
+    }
+    let cli = crate::live_photo::resolve_cli(&root)?;
+    let cfg = crate::live_photo::load_aip_config(&root)?;
+    let output_dir = crate::live_photo::default_output_dir(&cfg, &root)?;
+    Ok(serde_json::json!({
+        "cli": cli.program.to_string_lossy(),
+        "output_dir": output_dir.to_string_lossy(),
+    }))
 }
 
 #[cfg(test)]

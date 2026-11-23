@@ -7,12 +7,16 @@
 
 import { useState, useEffect } from 'react'
 import { convertFileSrc } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import {
   taskListRounds,
   taskListImages,
   roundOpenOutputDir,
+  taskImageDelete,
+  livePhotoGenerate,
   type TaskRound,
   type TaskImage,
+  type LivePhotoFinished,
 } from '@/hooks/api'
 import { useI18n } from '@/i18n'
 import { useTaskStatusLabels, useDownloadStatusLabels } from '@/utils/taskStatus'
@@ -43,10 +47,73 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
   const [images, setImages] = useState<TaskImage[]>([])
   const [, setLoading] = useState(false)
   const [selectedRoundId, setSelectedRoundId] = useState<number | null>(null)
+  /** 实况图片生成状态：job_id（'pending' = 请求已发出）与最近一条进度/结果 */
+  const [livePhotoJob, setLivePhotoJob] = useState<string | null>(null)
+  const [livePhotoStatus, setLivePhotoStatus] = useState('')
+  const [deletingImageId, setDeletingImageId] = useState<number | null>(null)
 
   useEffect(() => {
     loadRounds(taskId)
   }, [taskId])
+
+  // 实况图片事件：只响应当前任务的 job，避免其他任务的进度串进来
+  useEffect(() => {
+    let unlistenProgress: (() => void) | null = null
+    let unlistenFinished: (() => void) | null = null
+    ;(async () => {
+      unlistenProgress = await listen<{ task_id: number; job_id: string; line: string }>(
+        'live-photo-progress',
+        (event) => {
+          if (event.payload.task_id === taskId) setLivePhotoStatus(event.payload.line)
+        }
+      )
+      unlistenFinished = await listen<LivePhotoFinished>(
+        'live-photo-finished',
+        (event) => {
+          const r = event.payload
+          if (r.task_id !== taskId) return
+          setLivePhotoJob(null)
+          if (r.ok) {
+            setLivePhotoStatus(t('tasks.livePhotoDone', { id: taskId, count: r.success }))
+          } else {
+            const reason = r.error || r.preflight_error || ''
+            setLivePhotoStatus(t('tasks.livePhotoFailed', { id: taskId }) + (reason ? `：${reason}` : ''))
+          }
+        }
+      )
+    })()
+    return () => {
+      unlistenProgress?.()
+      unlistenFinished?.()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId])
+
+  const handleLivePhoto = async () => {
+    setLivePhotoJob('pending')
+    setLivePhotoStatus(t('tasks.livePhotoStarted', { id: taskId }))
+    try {
+      const jobId = await livePhotoGenerate(taskId)
+      setLivePhotoJob(jobId)
+    } catch (e) {
+      setLivePhotoJob(null)
+      setLivePhotoStatus(t('tasks.livePhotoFailed', { id: taskId }) + e)
+    }
+  }
+
+  const handleDeleteImage = async (imageId: number) => {
+    if (!window.confirm(t('roundDetail.deleteImageConfirm'))) return
+    setDeletingImageId(imageId)
+    try {
+      const successCount = await taskImageDelete(imageId)
+      setImages((prev) => prev.filter((img) => img.id !== imageId))
+      setRounds((prev) => prev.map((r) => (r.id === selectedRoundId ? { ...r, success_count: successCount } : r)))
+    } catch (e) {
+      alert(t('roundDetail.deleteImageFailed') + e)
+    } finally {
+      setDeletingImageId(null)
+    }
+  }
 
   const handleOpenFolder = async (roundId?: number) => {
     if (roundId == null) return
@@ -217,20 +284,45 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
                 )}
               </div>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
               <div style={{ fontSize: '13px', color: '#6b7280', textAlign: 'right' }}>
                 {formatDateTime(selectedRound.submitted_at) || '-'}{' | '}
                 {formatDateTime(selectedRound.completed_at) || '-'}
               </div>
-              {selectedRound.output_dir && (
-                <button
-                  onClick={() => handleOpenFolder(selectedRound.id)}
-                  title={selectedRound.output_dir}
-                  style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', whiteSpace: 'nowrap' }}
+              {livePhotoStatus && (
+                <div
+                  style={{
+                    fontSize: '12px',
+                    color: livePhotoJob ? '#7c3aed' : '#374151',
+                    textAlign: 'right',
+                    maxWidth: '460px',
+                    overflowWrap: 'anywhere',
+                  }}
                 >
-                  {t('roundDetail.openFolder')}
-                </button>
+                  {livePhotoStatus}
+                </div>
               )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {rounds.length > 0 && (
+                  <button
+                    onClick={handleLivePhoto}
+                    disabled={!!livePhotoJob}
+                    title={t('tasks.livePhotoHint')}
+                    style={{ background: livePhotoJob ? '#6b7280' : '#7c3aed', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: livePhotoJob ? 'not-allowed' : 'pointer', fontSize: '12px', whiteSpace: 'nowrap' }}
+                  >
+                    {livePhotoJob ? t('btn.generatingLivePhoto') : t('btn.generateLivePhoto')}
+                  </button>
+                )}
+                {selectedRound.output_dir && (
+                  <button
+                    onClick={() => handleOpenFolder(selectedRound.id)}
+                    title={selectedRound.output_dir}
+                    style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', whiteSpace: 'nowrap' }}
+                  >
+                    {t('roundDetail.openFolder')}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -257,6 +349,14 @@ export default function RoundDetail({ taskId, onBack }: { taskId: number; onBack
                       <div style={{ position: 'absolute', top: '4px', left: '4px', background: 'rgba(0,0,0,0.6)', color: '#fff', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>
                         {img.image_index}
                       </div>
+                      <button
+                        onClick={() => handleDeleteImage(img.id!)}
+                        disabled={deletingImageId === img.id}
+                        title={t('roundDetail.deleteImageHint')}
+                        style={{ position: 'absolute', top: '4px', right: '4px', background: 'rgba(220,38,38,0.9)', color: '#fff', border: 'none', padding: '2px 8px', borderRadius: '4px', cursor: deletingImageId === img.id ? 'not-allowed' : 'pointer', fontSize: '11px' }}
+                      >
+                        {deletingImageId === img.id ? '…' : t('roundDetail.deleteImage')}
+                      </button>
                     </div>
                     <div style={{ padding: '8px' }}>
                       <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>

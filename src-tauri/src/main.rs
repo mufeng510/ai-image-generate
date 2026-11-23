@@ -3,6 +3,7 @@
 use tauri::{Builder, Manager};
 mod commands;
 mod db;
+mod live_photo;
 mod models;
 mod schema;
 mod task_scheduler;
@@ -64,6 +65,7 @@ fn main() {
             commands::task_list_rounds,
             commands::round_open_output_dir,
             commands::task_list_images,
+            commands::task_image_delete,
             commands::dashboard_stats,
             commands::execution_logs,
             commands::logs_query,
@@ -73,6 +75,8 @@ fn main() {
             commands::notification_mark_read,
             commands::notification_mark_all_read,
             commands::notification_clear,
+            commands::live_photo_generate,
+            commands::live_photo_probe,
         ])
         .setup(|app| {
             let _ = db::init_db();

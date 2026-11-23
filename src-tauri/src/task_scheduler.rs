@@ -1157,7 +1157,7 @@ fn allocate_round_dir(output_root: &std::path::Path) -> std::path::PathBuf {
 }
 
 /** 目录名清洗：去除非法路径字符、控制字符，去掉结尾的点/空格，限制长度；空名回落「任务」 */
-fn sanitize_dir_component(name: &str) -> String {
+pub(crate) fn sanitize_dir_component(name: &str) -> String {
     const FORBIDDEN: [char; 12] = ['<', '>', ':', '"', '/', '\\', '|', '?', '*', '\0', '\r', '\n'];
     let cleaned: String = name
         .trim()
@@ -1176,7 +1176,7 @@ fn sanitize_dir_component(name: &str) -> String {
 }
 
 /** 任务专属输出目录：output/<任务名>。同名任务目录复用（轮次目录仍带毫秒时间戳，不会冲突）；任务内各轮共享该目录 */
-fn task_output_dir(output_root: &std::path::Path, task_name: &str) -> std::path::PathBuf {
+pub(crate) fn task_output_dir(output_root: &std::path::Path, task_name: &str) -> std::path::PathBuf {
     output_root.join(sanitize_dir_component(task_name))
 }
 

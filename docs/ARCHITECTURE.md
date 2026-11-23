@@ -248,6 +248,11 @@ ai-image-generate/
 | `settings_get` | 获取设置 | `key` | `String` |
 | `settings_set` | 设置设置 | `key, value` | `Result` |
 | `lang_switch` | 切换语言 | `lang` | `Result` |
+| `live_photo_generate` | 生成实况图片：调用外部 AI Image Process CLI，把任务文件夹下所有轮次的图片转为 Live Photo。同步校验后立即返回 job_id，CLI 在后台线程执行 | `task_id` | `job_id` |
+| `live_photo_probe` | 设置页测试：校验 AI Image Process 目录能找到 CLI 与默认输出目录 | - | `{cli, output_dir}` |
+| `task_image_delete` | 删除单张生成图片：校验路径在该轮次 output_dir 内后删除磁盘文件与数据库记录，重算轮次成功数；不可逆，前端需确认 | `id` | `success_count` |
+
+> 「生成实况图片」通过新增模块 `live_photo.rs` 实现：输入目录用 `task_output_dir()` 直接算出（任务名 + 项目根），CLI 开启 `input.recurse_folders=true` 覆盖全部轮次；输出到 AIP 自己配置的默认目录，本软件不保留产物。详见 `docs/LIVE_PHOTO_INTEGRATION.md`。
 
 ### 5.2 Events (后端 → 前端)
 
@@ -260,6 +265,8 @@ ai-image-generate/
 | `task-error` | 任务错误 | `{task_id, error}` |
 | `account-login-required` | 需要登录 | `{account_id}` |
 | `download-progress` | 下载进度 | `{round_id, current, total}` |
+| `live-photo-progress` | 实况图片生成进度（CLI stderr 逐行转发） | `{task_id, job_id, line}` |
+| `live-photo-finished` | 实况图片生成终态 | `{task_id, job_id, ok, success, failed, preflight_failed, preflight_error, output_dir, error?}` |
 
 > 日志中不得输出 Cookie、密码、完整授权头等敏感信息。
 

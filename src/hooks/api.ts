@@ -367,6 +367,11 @@ export async function taskListImages(round_id: number): Promise<TaskImage[]> {
   return invoke('task_list_images', { round_id })
 }
 
+/** 删除单张生成图片（磁盘文件 + 数据库记录），返回该轮次剩余成功数。不可逆。 */
+export async function taskImageDelete(id: number): Promise<number> {
+  return invoke('task_image_delete', { id })
+}
+
 export async function dashboardStats(): Promise<DashboardStats> {
   return invoke('dashboard_stats')
 }
@@ -401,4 +406,28 @@ export async function notificationMarkAllRead(): Promise<void> {
 
 export async function notificationClear(): Promise<void> {
   return invoke('notification_clear')
+}
+
+/** 实况图片生成终态（对应后端 live-photo-finished 事件） */
+export interface LivePhotoFinished {
+  task_id: number
+  job_id: string
+  ok: boolean
+  success: number
+  failed: number
+  preflight_failed: boolean
+  preflight_error: string | null
+  output_dir: string | null
+  error?: string | null
+}
+
+/** 启动「生成实况图片」：把该任务所有轮次的图片交给 AI Image Process 转成实况图片。
+ *  立即返回 job_id，进度与终态通过 Tauri 事件推送。 */
+export async function livePhotoGenerate(task_id: number): Promise<string> {
+  return invoke('live_photo_generate', { task_id })
+}
+
+/** 设置页测试：校验 AI Image Process 目录与默认输出目录 */
+export async function livePhotoProbe(): Promise<{ cli: string; output_dir: string }> {
+  return invoke('live_photo_probe')
 }
