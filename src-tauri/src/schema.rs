@@ -26,6 +26,8 @@ pub fn create_tables(conn: &Connection) -> Result<(), Box<dyn std::error::Error>
             submit_count INTEGER DEFAULT 0,
             last_used_at TEXT,
             order_index INTEGER,
+            persisted_verified_images INTEGER DEFAULT 0,
+            persisted_completed_rounds INTEGER DEFAULT 0,
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_accounts_name ON accounts(name);
@@ -34,6 +36,7 @@ pub fn create_tables(conn: &Connection) -> Result<(), Box<dyn std::error::Error>
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
+            output_folder TEXT,
             project_id INTEGER,
             account_id INTEGER,
             status TEXT NOT NULL DEFAULT 'pending',
@@ -102,6 +105,7 @@ pub fn create_tables(conn: &Connection) -> Result<(), Box<dyn std::error::Error>
             task_id INTEGER,
             level TEXT NOT NULL DEFAULT 'info',
             message TEXT NOT NULL,
+            task_name TEXT,
             created_at TEXT NOT NULL,
             FOREIGN KEY (task_id) REFERENCES tasks(id)
         );
@@ -122,6 +126,7 @@ pub fn create_tables(conn: &Connection) -> Result<(), Box<dyn std::error::Error>
             message TEXT NOT NULL,
             level TEXT NOT NULL DEFAULT 'info',
             task_id INTEGER,
+            task_name TEXT,
             read INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL
         );
@@ -152,11 +157,53 @@ pub fn migrate(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
 
 fn migrate_inner(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     ensure_column(conn, "tasks", "interrupted_status", "TEXT")?;
+    ensure_column(conn, "tasks", "output_folder", "TEXT")?;
     ensure_column(conn, "task_rounds", "output_dir", "TEXT")?;
     ensure_column(conn, "accounts", "order_index", "INTEGER")?;
     ensure_column(conn, "projects", "gen_params_json", "TEXT")?;
     ensure_column(conn, "projects", "expected_images_per_round", "INTEGER")?;
     ensure_column(conn, "task_rounds", "expected_count", "INTEGER")?;
+    ensure_column(conn, "accounts", "persisted_verified_images", "INTEGER DEFAULT 0")?;
+    ensure_column(conn, "accounts", "persisted_completed_rounds", "INTEGER DEFAULT 0")?;
+    ensure_column(conn, "execution_logs", "task_name", "TEXT")?;
+    ensure_column(conn, "notifications", "task_name", "TEXT")?;
+
+    // 旧库回填持久化统计与任务名快照（表缺失时跳过，兼容最小测试库）
+    let has = |table: &str| -> Result<bool, Box<dyn std::error::Error>> {
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table], |r| r.get(0))?;
+        Ok(n > 0)
+    };
+    if has("task_images")? && has("task_rounds")? && has("tasks")? {
+        conn.execute_batch(
+            r#"
+            UPDATE accounts SET persisted_verified_images = (
+                SELECT COUNT(*) FROM task_images ti
+                JOIN task_rounds tr ON ti.task_round_id = tr.id
+                JOIN tasks t ON tr.task_id = t.id
+                WHERE t.account_id = accounts.id AND ti.download_status = 'verified'
+            );
+            UPDATE accounts SET persisted_completed_rounds = (
+                SELECT COUNT(*) FROM task_rounds tr
+                JOIN tasks t ON tr.task_id = t.id
+                WHERE t.account_id = accounts.id AND tr.status = 'completed'
+            );
+            "#,
+        )?;
+    }
+    if has("execution_logs")? && has("tasks")? {
+        conn.execute(
+            "UPDATE execution_logs SET task_name = (SELECT name FROM tasks WHERE tasks.id = execution_logs.task_id) \
+             WHERE task_name IS NULL AND task_id IS NOT NULL", [],
+        )?;
+    }
+    if has("notifications")? && has("tasks")? {
+        conn.execute(
+            "UPDATE notifications SET task_name = (SELECT name FROM tasks WHERE tasks.id = notifications.task_id) \
+             WHERE task_name IS NULL AND task_id IS NOT NULL", [],
+        )?;
+    }
     // 旧账号按 id（插入顺序）回填 order_index
     conn.execute(
         "UPDATE accounts SET order_index = id WHERE order_index IS NULL",
@@ -175,7 +222,7 @@ fn migrate_inner(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap_or(0);
     // 只提升，不回退：避免覆盖未来更高的版本号
-    let target: i64 = 4;
+    let target: i64 = 6;
     if current < target {
         conn.pragma_update(None, "user_version", target)?;
     }
@@ -188,6 +235,12 @@ fn ensure_column(
     column: &str,
     decl: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let table_exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table], |r| r.get(0))?;
+    if table_exists == 0 {
+        return Ok(());
+    }
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
     let exists = stmt
         .query_map([], |row| row.get::<_, String>(1))?
@@ -239,6 +292,7 @@ mod tests {
         migrate(&conn).unwrap();
 
         assert!(columns(&conn, "tasks").contains(&"interrupted_status".to_string()));
+        assert!(columns(&conn, "tasks").contains(&"output_folder".to_string()));
         assert!(columns(&conn, "task_rounds").contains(&"output_dir".to_string()));
         assert!(columns(&conn, "task_rounds").contains(&"expected_count".to_string()));
         assert!(columns(&conn, "accounts").contains(&"order_index".to_string()));
@@ -254,7 +308,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(order, vec![1, 2]);
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 6);
     }
 
     #[test]
@@ -268,11 +322,12 @@ mod tests {
 
         assert_eq!(before, columns(&conn, "tasks"));
         assert!(columns(&conn, "tasks").contains(&"interrupted_status".to_string()));
+        assert!(columns(&conn, "tasks").contains(&"output_folder".to_string()));
         assert!(columns(&conn, "task_rounds").contains(&"output_dir".to_string()));
         assert!(columns(&conn, "accounts").contains(&"order_index".to_string()));
         assert!(columns(&conn, "projects").contains(&"gen_params_json".to_string()));
         assert!(columns(&conn, "projects").contains(&"expected_images_per_round".to_string()));
         assert!(columns(&conn, "task_rounds").contains(&"expected_count".to_string()));
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 6);
     }
 }

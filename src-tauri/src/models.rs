@@ -116,6 +116,53 @@ pub struct ProjectHistoryItem {
     pub completed_at: Option<String>,
 }
 
+/// 一条「文件夹即任务」记录：从项目 output 目录扫描得到
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TaskFolder {
+    pub folder: String,
+    pub name: String,
+    pub task_id: Option<i64>,
+    pub project_id: Option<i64>,
+    pub account_id: Option<i64>,
+    pub total_rounds: i64,
+    pub round_count: i64,
+    pub image_count: i64,
+    /// generating / pending_review / converted / empty
+    pub status: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub path: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TaskFolderImage {
+    pub file: String,
+    pub path: String,
+    pub index: Option<i64>,
+    pub sha256: Option<String>,
+    pub size: Option<i64>,
+    pub format: Option<String>,
+    pub ok: Option<bool>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TaskFolderRound {
+    pub dir: String,
+    pub round_number: Option<i64>,
+    pub prompt: Option<String>,
+    pub image_count: i64,
+    pub images: Vec<TaskFolderImage>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TaskFolderDetail {
+    pub folder: String,
+    pub path: String,
+    pub total_rounds: i64,
+    pub status: String,
+    pub rounds: Vec<TaskFolderRound>,
+}
+
 /// 单张参考图（位于项目 references 目录内）
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ReferenceItem {

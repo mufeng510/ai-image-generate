@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::db::get_connection;
-use crate::models::{Account, DashboardStats, LogEntry, Project, Task, TaskImage, TaskRound};
+use crate::models::{Account, DashboardStats, LogEntry, Project, Task, TaskFolder, TaskFolderDetail, TaskFolderImage, TaskFolderRound, TaskImage, TaskRound};
 use crate::task_scheduler;
 use crate::task_scheduler::Scheduler;
 
@@ -1239,6 +1239,16 @@ mod project_tests {
             )
             .unwrap();
         }
+        // 新口径：账号统计来自持久化列（模拟每轮完成时的固化）
+        conn.execute(
+            "UPDATE accounts SET persisted_verified_images = (SELECT COUNT(*) FROM task_images ti \
+             JOIN task_rounds tr ON ti.task_round_id = tr.id JOIN tasks t ON tr.task_id = t.id \
+             WHERE t.account_id = ?1 AND ti.download_status = 'verified'), \
+             persisted_completed_rounds = (SELECT COUNT(*) FROM task_rounds tr JOIN tasks t ON tr.task_id = t.id \
+             WHERE t.account_id = ?1 AND tr.status = 'completed') WHERE id = ?1",
+            [account_id],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1433,13 +1443,8 @@ pub async fn account_list() -> Result<Vec<Account>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT a.id, a.name, a.user_data_dir, a.status, a.image_threshold, a.success_count, a.submit_count, a.last_used_at, a.created_at, a.order_index,
-                    (SELECT COUNT(*) FROM task_images ti
-                       JOIN task_rounds tr ON ti.task_round_id = tr.id
-                       JOIN tasks t ON tr.task_id = t.id
-                      WHERE t.account_id = a.id AND ti.download_status = 'verified') AS verified_images,
-                    (SELECT COUNT(*) FROM task_rounds tr
-                       JOIN tasks t ON tr.task_id = t.id
-                      WHERE t.account_id = a.id AND tr.status = 'completed') AS completed_rounds
+                    COALESCE(a.persisted_verified_images, 0) AS verified_images,
+                    COALESCE(a.persisted_completed_rounds, 0) AS completed_rounds
                FROM accounts a
               ORDER BY COALESCE(a.order_index, a.id) ASC, a.id ASC",
         )
@@ -1714,11 +1719,422 @@ pub async fn task_list() -> Result<Vec<Task>, String> {
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/** 读取任务文件夹清单（task.meta.json）；缺失或解析失败返回 None */
+fn read_task_meta(dir: &std::path::Path) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(dir.join("task.meta.json")).ok()?;
+    serde_json::from_str::<serde_json::Value>(&text).ok()
+}
+
+fn is_image_file(path: &std::path::Path) -> bool {
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+    matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp")
+}
+
+fn count_round_images(round_dir: &std::path::Path) -> (i64, Option<String>) {
+    let mut count = 0;
+    let mut latest: Option<String> = None;
+    if let Ok(entries) = std::fs::read_dir(round_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && is_image_file(&path) {
+                count += 1;
+                if let Ok(meta) = entry.metadata() {
+                    latest = modified_rfc3339(&meta).or(latest);
+                }
+            }
+        }
+    }
+    (count, latest)
+}
+
+/** 文件夹派生状态：已转实况 / 生成中 / 待筛选 / 空任务 */
+fn task_folder_status(meta: &serde_json::Value, folder: &str, has_images: bool) -> String {
+    if meta.get("converted_at").and_then(|v| v.as_str()).is_some() {
+        return "converted".to_string();
+    }
+    if let Ok(conn) = get_connection() {
+        let running: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE output_folder = ?1 AND status IN ('preparing','selecting_images','waiting_confirmation','uploading','submitting','generating','downloading','verifying')",
+                [folder],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if running > 0 {
+            return "generating".to_string();
+        }
+    }
+    if has_images { "pending_review" } else { "empty" }.to_string()
+}
+
+fn json_i64(v: &serde_json::Value, key: &str) -> Option<i64> {
+    v.get(key).and_then(|x| x.as_i64())
+}
+fn json_str(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
+}
+
+/**
+ * 列出项目下所有「任务文件夹」：只认含 task.meta.json 的目录。
+ * 磁盘是记录真相源——文件夹被删，这条记录自然消失。
+ */
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_task_folders(project_id: i64) -> Result<Vec<TaskFolder>, String> {
+    let root = project_root_by_id(project_id)?;
+    let output = root.join("output");
+    if !output.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut items = Vec::new();
+    for entry in std::fs::read_dir(&output).map_err(|e| e.to_string())?.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Some(meta) = read_task_meta(&dir) else { continue };
+        let folder = entry.file_name().to_string_lossy().to_string();
+        let mut round_count = 0;
+        let mut image_count = 0;
+        let mut latest: Option<String> = None;
+        if let Ok(subs) = std::fs::read_dir(&dir) {
+            for sub in subs.flatten() {
+                let round_dir = sub.path();
+                if !round_dir.is_dir() || !round_dir.join("task.json").is_file() {
+                    continue;
+                }
+                round_count += 1;
+                let (n, t) = count_round_images(&round_dir);
+                image_count += n;
+                latest = t.or(latest);
+            }
+        }
+        let folder_updated = entry.metadata().ok().and_then(|m| modified_rfc3339(&m));
+        items.push(TaskFolder {
+            folder: folder.clone(),
+            name: json_str(&meta, "folder").unwrap_or_else(|| folder.clone()),
+            task_id: json_i64(&meta, "task_id"),
+            project_id: json_i64(&meta, "project_id"),
+            account_id: json_i64(&meta, "account_id"),
+            total_rounds: json_i64(&meta, "total_rounds").unwrap_or(0),
+            round_count,
+            image_count,
+            status: task_folder_status(&meta, &folder, image_count > 0),
+            created_at: json_str(&meta, "created_at"),
+            updated_at: latest.or(folder_updated),
+            path: display_path_buf(dir).to_string_lossy().to_string(),
+        });
+    }
+    items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(items)
+}
+
+/** 任务文件夹详情：轮次与图片直接从磁盘 task.json 读取 */
+#[tauri::command(rename_all = "snake_case")]
+pub async fn task_folder_detail(project_id: i64, folder: String) -> Result<TaskFolderDetail, String> {
+    let root = project_root_by_id(project_id)?;
+    let base = root.join("output");
+    if !base.is_dir() {
+        return Err("该项目尚无输出目录".to_string());
+    }
+    let base = base.canonicalize().map_err(|e| e.to_string())?;
+    let dir = ensure_within(&base, &base.join(&folder))?;
+    let meta = read_task_meta(&dir).ok_or_else(|| "任务清单缺失：task.meta.json".to_string())?;
+    let mut rounds = Vec::new();
+    for sub in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+        let round_dir = sub.path();
+        if !round_dir.is_dir() || !round_dir.join("task.json").is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(round_dir.join("task.json")).unwrap_or_default();
+        let round_json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        let recorded = round_json
+            .get("images")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut images = Vec::new();
+        for file in std::fs::read_dir(&round_dir).map_err(|e| e.to_string())?.flatten() {
+            let path = file.path();
+            if !path.is_file() || !is_image_file(&path) {
+                continue;
+            }
+            let name = file.file_name().to_string_lossy().to_string();
+            let rec = recorded.iter().find(|r| {
+                r.get("file").and_then(|v| v.as_str()) == Some(name.as_str())
+            });
+            images.push(TaskFolderImage {
+                file: name.clone(),
+                path: display_path_buf(path).to_string_lossy().to_string(),
+                index: rec.and_then(|r| json_i64(r, "index")),
+                sha256: rec.and_then(|r| json_str(r, "sha256")),
+                size: rec.and_then(|r| json_i64(r, "size")),
+                format: rec.and_then(|r| json_str(r, "ext")),
+                ok: rec.and_then(|r| r.get("ok").and_then(|v| v.as_bool())),
+            });
+        }
+        images.sort_by_key(|i| i.index.unwrap_or(9999));
+        rounds.push(TaskFolderRound {
+            dir: sub.file_name().to_string_lossy().to_string(),
+            round_number: json_i64(&round_json, "round_number"),
+            prompt: json_str(&round_json, "prompt"),
+            image_count: images.len() as i64,
+            images,
+        });
+    }
+    rounds.sort_by(|a, b| a.dir.cmp(&b.dir));
+    let status = task_folder_status(&meta, &folder, rounds.iter().any(|r| r.image_count > 0));
+    Ok(TaskFolderDetail {
+        folder: folder.clone(),
+        path: display_path_buf(dir).to_string_lossy().to_string(),
+        total_rounds: json_i64(&meta, "total_rounds").unwrap_or(0),
+        status,
+        rounds,
+    })
+}
+
+/**
+ * 老项目兜底：为 output 下缺少 task.meta.json 的任务文件夹回填清单。
+ * 老目录按「项目名-日期」复用，一个文件夹可能装多个任务；此时标记 legacy_batch=true，
+ * 仍按一条文件夹记录展示，避免误拆用户已有产物。
+ */
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_backfill_task_meta(project_id: i64) -> Result<i64, String> {
+    let root = project_root_by_id(project_id)?;
+    let output = root.join("output");
+    if !output.is_dir() {
+        return Ok(0);
+    }
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let mut filled = 0;
+    for entry in std::fs::read_dir(&output).map_err(|e| e.to_string())?.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() || dir.join("task.meta.json").exists() {
+            continue;
+        }
+        let folder = entry.file_name().to_string_lossy().to_string();
+        // 先从数据库按 output_folder 或清洗后的任务名找；再回落到轮次 task.json
+        let mut row: Option<(i64, Option<i64>, Option<i64>, i64, String)> = conn.query_row(
+            "SELECT id, project_id, account_id, total_rounds, created_at FROM tasks \
+             WHERE output_folder = ?1 OR name = ?1 LIMIT 1",
+            rusqlite::params![folder],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).ok();
+        if row.is_none() {
+            if let Ok(subs) = std::fs::read_dir(&dir) {
+                for sub in subs.flatten() {
+                    let tj = sub.path().join("task.json");
+                    if !tj.is_file() { continue; }
+                    if let Ok(text) = std::fs::read_to_string(&tj) {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                            let tid = v.get("task_id").and_then(|x| x.as_i64()).unwrap_or(0);
+                            if tid > 0 {
+                                row = Some((tid,
+                                    v.get("project_id").and_then(|x| x.as_i64()),
+                                    None, 1,
+                                    v.get("finished_at").and_then(|x| x.as_str()).unwrap_or("").to_string()));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let (task_id, pid, aid, rounds, created) = row.unwrap_or((0, Some(project_id), None, 0, String::new()));
+        // 同名老目录可能对应多个任务：标注为批次，数据以文件夹扫描为准
+        let legacy_batch = conn.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE output_folder = ?1 OR REPLACE(name, ':', '-') = ?1",
+            rusqlite::params![folder], |r| r.get::<_, i64>(0),
+        ).unwrap_or(0) > 1;
+        let payload = serde_json::json!({
+            "schema": 1,
+            "task_id": if task_id > 0 { Some(task_id) } else { None },
+            "project_id": pid,
+            "account_id": aid,
+            "folder": folder,
+            "total_rounds": rounds,
+            "created_at": if created.is_empty() { None } else { Some(created) },
+            "legacy_batch": legacy_batch,
+        });
+        let _ = std::fs::write(dir.join("task.meta.json"), serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?);
+        filled += 1;
+    }
+    Ok(filled)
+}
+
+/** 一次性维护：删除「文件夹已不存在」的任务记录（不动磁盘、不删现存文件夹） */
+#[tauri::command(rename_all = "snake_case")]
+pub async fn cleanup_stale_task_records() -> Result<i64, String> {
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let rows: Vec<(i64, String, Option<String>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT t.id, t.name, t.output_folder FROM tasks t WHERE t.output_folder IS NOT NULL OR t.status IN ('completed','cancelled','failed')",
+        ).map_err(|e| e.to_string())?;
+        let mapped = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in mapped {
+            if let Ok(row) = row {
+                out.push(row);
+            }
+        }
+        out
+    };
+    let mut removed = 0;
+    for (id, name, folder) in rows {
+        let folder_name = folder.filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| task_scheduler::sanitize_dir_component(&name));
+        let root_path: Option<String> = conn.query_row(
+            "SELECT p.root_path FROM projects p JOIN tasks t ON t.project_id = p.id WHERE t.id = ?1",
+            [id], |r| r.get(0)).ok();
+        let exists = root_path
+            .map(|root| std::path::PathBuf::from(root).join("output").join(&folder_name).is_dir())
+            .unwrap_or(false);
+        if !exists {
+            let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+            let _ = tx.execute("DELETE FROM task_images WHERE task_round_id IN (SELECT id FROM task_rounds WHERE task_id = ?1)", [id]);
+            let _ = tx.execute("DELETE FROM task_rounds WHERE task_id = ?1", [id]);
+            let _ = tx.execute("DELETE FROM tasks WHERE id = ?1", [id]);
+            let _ = tx.commit();
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/** 解析 base 内已存在的路径（含 junction 逃逸检查）；返回去掉 Windows 前缀的路径 */
+fn resolve_output_path(base: &std::path::Path, rel: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let joined = base.join(rel);
+    let canonical = joined
+        .canonicalize()
+        .map_err(|e| format!("路径不存在：{}（{}）", joined.display(), e))?;
+    if !canonical.starts_with(base) {
+        return Err("路径不在项目输出目录内，拒绝访问".to_string());
+    }
+    Ok(display_path_buf(canonical))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn task_folder_open(
+    project_id: i64,
+    folder: String,
+    round: Option<String>,
+) -> Result<(), String> {
+    let root = project_root_by_id(project_id)?;
+    let base = root.join("output");
+    if !base.is_dir() {
+        return Err("该项目尚无输出目录".to_string());
+    }
+    let base = base.canonicalize().map_err(|e| e.to_string())?;
+    let task_dir = resolve_output_path(&base, std::path::Path::new(&folder))?;
+    let dir = match round {
+        Some(r) if !r.trim().is_empty() => resolve_output_path(&task_dir, std::path::Path::new(&r))?,
+        _ => task_dir,
+    };
+    open_in_file_manager(&dir)
+}
+
+/** 通知/旧入口用：由 task_id 定位它所在的项目与文件夹 */
+#[tauri::command(rename_all = "snake_case")]
+pub async fn task_folder_locator(task_id: i64) -> Result<Option<(i64, String)>, String> {
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    let row = conn.query_row(
+        "SELECT project_id, output_folder FROM tasks WHERE id = ?1",
+        [task_id],
+        |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?)),
+    );
+    match row {
+        Ok((Some(project_id), Some(folder))) if !folder.trim().is_empty() => {
+            Ok(Some((project_id, folder)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/**
+ * 筛选阶段删除单张图片：删磁盘文件 + 重写 task.json 的 images 列表 + 清理仍存在的 DB 记录。
+ * 文件夹是记录真相源，元数据必须与实际文件保持一致。
+ */
+#[tauri::command(rename_all = "snake_case")]
+pub async fn task_folder_delete_image(
+    project_id: i64,
+    folder: String,
+    round: String,
+    file: String,
+) -> Result<(), String> {
+    let root = project_root_by_id(project_id)?;
+    let base = root.join("output");
+    if !base.is_dir() {
+        return Err("该项目尚无输出目录".to_string());
+    }
+    let base = base.canonicalize().map_err(|e| e.to_string())?;
+    let task_dir = resolve_output_path(&base, std::path::Path::new(&folder))?;
+    let round_dir = resolve_output_path(&task_dir, std::path::Path::new(&round))?;
+    let target = resolve_output_path(&round_dir, std::path::Path::new(&file))?;
+    if !target.is_file() || !is_image_file(&target) {
+        return Err("不是有效的图片文件".to_string());
+    }
+    std::fs::remove_file(&target).map_err(|e| format!("删除图片失败：{}", e))?;
+
+    let round_json_path = round_dir.join("task.json");
+    if let Ok(text) = std::fs::read_to_string(&round_json_path) {
+        if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(images) = value.get_mut("images").and_then(|v| v.as_array_mut()) {
+                images.retain(|item| {
+                    item.get("file").and_then(|v| v.as_str()) != Some(file.as_str())
+                });
+                if let Ok(pretty) = serde_json::to_string_pretty(&value) {
+                    let _ = std::fs::write(&round_json_path, pretty);
+                }
+            }
+        }
+    }
+
+    // 数据库记录可能还在（尚未转实况清理），同步删掉，避免统计口径不一致
+    if let Ok(conn) = get_connection() {
+        let path_text = target.to_string_lossy().to_string();
+        let _ = conn.execute(
+            "DELETE FROM task_images WHERE saved_path = ?1",
+            rusqlite::params![path_text],
+        );
+        // 按文件夹名找到任务并刷新账号统计（若任务行仍在）
+        if let Ok(account_id) = conn.query_row(
+            "SELECT account_id FROM tasks WHERE output_folder = ?1",
+            rusqlite::params![folder], |r| r.get::<_, Option<i64>>(0),
+        ) {
+            if let Some(account_id) = account_id {
+                let _ = task_scheduler::refresh_account_persisted_stats(&conn, account_id);
+            }
+        }
+    }
+    Ok(())
+}
+
 /** 生成任务名：项目名-日期（本地日期，如：奶瓶收纳盒生图-2026-11-06） */
 fn make_task_name(project_name: &str) -> String {
     let trimmed = project_name.trim();
     let base = if trimmed.is_empty() { "任务" } else { trimmed };
     format!("{}-{}", base, Local::now().format("%Y-%m-%d"))
+}
+
+/**
+ * 生成唯一任务文件夹名：项目名-日期-时分秒-毫秒。
+ * 一条任务对应一个文件夹；毫秒冲突时递增后缀。
+ */
+fn make_task_folder_name(project_name: &str) -> String {
+    let trimmed = project_name.trim();
+    let base = if trimmed.is_empty() { "任务" } else { trimmed };
+    format!("{}-{}", base, Local::now().format("%Y-%m-%d-%H%M%S-%3f"))
+}
+
+fn allocate_task_folder(output_root: &std::path::Path, project_name: &str) -> String {
+    let base = task_scheduler::sanitize_dir_component(&make_task_folder_name(project_name));
+    let mut candidate = base.clone();
+    let mut n = 1;
+    while output_root.join(&candidate).exists() {
+        candidate = format!("{}_{}", base, n);
+        n += 1;
+    }
+    candidate
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -1730,8 +2146,12 @@ pub async fn task_create(
 ) -> Result<Task, String> {
     let total_rounds = rounds.unwrap_or(1).clamp(1, 999);
     let conn = get_connection().map_err(|e| e.to_string())?;
-    let project_name: String = conn
-        .query_row("SELECT name FROM projects WHERE id = ?1", [project_id], |row| row.get(0))
+    let (project_name, project_root): (String, String) = conn
+        .query_row(
+            "SELECT name, root_path FROM projects WHERE id = ?1",
+            [project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
         .map_err(|_| "项目不存在".to_string())?;
     // 账号：显式优先（单次任务指定优先账号）；否则按列表顺序自动轮换（跳过未登录或已达阈值的账号）
     let account_id = match account_id {
@@ -1748,13 +2168,27 @@ pub async fn task_create(
         None => crate::task_scheduler::auto_pick_account_id(&conn)?,
     };
     let name = make_task_name(&project_name);
+    let folder = allocate_task_folder(&std::path::PathBuf::from(&project_root).join("output"), &project_name);
     let now = Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO tasks (name, project_id, account_id, status, total_rounds, created_at, updated_at) VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?5)",
-        rusqlite::params![name, project_id, account_id, total_rounds, now],
+        "INSERT INTO tasks (name, output_folder, project_id, account_id, status, total_rounds, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?6)",
+        rusqlite::params![name, folder, project_id, account_id, total_rounds, now],
     )
     .map_err(|e| e.to_string())?;
     let last_id = conn.last_insert_rowid();
+    // 清单落盘失败则撤销任务行，避免留下没有文件夹的「幽灵任务」
+    if let Err(e) = task_scheduler::write_task_meta(
+        &std::path::PathBuf::from(&project_root),
+        &folder,
+        last_id,
+        project_id,
+        account_id,
+        total_rounds,
+        &now,
+    ) {
+        let _ = conn.execute("DELETE FROM tasks WHERE id = ?1", [last_id]);
+        return Err(e);
+    }
 
     // 创建即入队：开启调度闸门；队列空闲时调度器下一轮立即拣取该任务，
     // 已有任务执行中则保持 pending，按 created_at 顺序串行执行。
@@ -2086,6 +2520,15 @@ pub async fn task_image_delete(id: i64) -> Result<i64, String> {
         ],
     );
     tx.commit().map_err(|e| e.to_string())?;
+    // 删除已校验图片后同步账号持久化统计
+    if let Ok(account_id) = conn.query_row(
+        "SELECT t.account_id FROM task_rounds tr JOIN tasks t ON tr.task_id = t.id WHERE tr.id = ?1",
+        [round_id], |r| r.get::<_, Option<i64>>(0),
+    ) {
+        if let Some(account_id) = account_id {
+            let _ = task_scheduler::refresh_account_persisted_stats(&conn, account_id);
+        }
+    }
     Ok(success_count)
 }
 
@@ -2094,13 +2537,8 @@ pub async fn account_get(id: i64) -> Result<Option<Account>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT a.id, a.name, a.user_data_dir, a.status, a.image_threshold, a.success_count, a.submit_count, a.last_used_at, a.created_at, a.order_index,
-                (SELECT COUNT(*) FROM task_images ti
-                   JOIN task_rounds tr ON ti.task_round_id = tr.id
-                   JOIN tasks t ON tr.task_id = t.id
-                  WHERE t.account_id = a.id AND ti.download_status = 'verified') AS verified_images,
-                (SELECT COUNT(*) FROM task_rounds tr
-                   JOIN tasks t ON tr.task_id = t.id
-                  WHERE t.account_id = a.id AND tr.status = 'completed') AS completed_rounds
+                COALESCE(a.persisted_verified_images, 0) AS verified_images,
+                COALESCE(a.persisted_completed_rounds, 0) AS completed_rounds
            FROM accounts a
           WHERE a.id = ?1",
     ).map_err(|e| e.to_string())?;
@@ -2202,7 +2640,7 @@ pub async fn execution_logs(limit: i64) -> Result<Vec<LogEntry>, String> {
     let conn = get_connection().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT l.id, l.task_id, l.level, l.message, l.created_at, t.name
+            "SELECT l.id, l.task_id, l.level, l.message, l.created_at, COALESCE(l.task_name, t.name)
                FROM execution_logs l
                LEFT JOIN tasks t ON l.task_id = t.id
               ORDER BY l.created_at DESC LIMIT ?1",
@@ -2241,7 +2679,7 @@ fn logs_query_with_conn(
 ) -> Result<Vec<LogEntry>, String> {
     let limit = filter.limit.unwrap_or(500).clamp(1, 5000);
     let mut sql = String::from(
-        "SELECT l.id, l.task_id, l.level, l.message, l.created_at, t.name
+        "SELECT l.id, l.task_id, l.level, l.message, l.created_at, COALESCE(l.task_name, t.name)
            FROM execution_logs l
            LEFT JOIN tasks t ON l.task_id = t.id
           WHERE 1 = 1",
@@ -2412,9 +2850,13 @@ pub async fn notification_create(
     };
     let conn = get_connection().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
+    let task_name: Option<String> = match task_id {
+        Some(id) => conn.query_row("SELECT name FROM tasks WHERE id = ?1", [id], |r| r.get(0)).ok(),
+        None => None,
+    };
     conn.execute(
-        "INSERT INTO notifications (kind, title, message, level, task_id, read, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
-        rusqlite::params![kind, title, message, level, task_id, now],
+        "INSERT INTO notifications (kind, title, message, level, task_id, task_name, read, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
+        rusqlite::params![kind, title, message, level, task_id, task_name, now],
     )
     .map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
@@ -2474,9 +2916,26 @@ pub async fn live_photo_generate(app: AppHandle, task_id: i64) -> Result<String,
         }
     };
     let job_id = prepared.job_id.clone();
+    let input_dir = prepared.input_dir.clone();
     let app_for_thread = app.clone();
     std::thread::spawn(move || {
-        let result = crate::live_photo::execute(&app_for_thread, prepared);
+        let mut result = crate::live_photo::execute(&app_for_thread, prepared);
+        if result.ok {
+            match crate::live_photo::cleanup_task_records(result.task_id, &input_dir, result.originals_deleted) {
+                Ok(()) => {
+                    result.records_cleaned = true;
+                    result.cleanup_note = Some("任务文件夹已删除，任务记录已清理".to_string());
+                }
+                Err(e) => {
+                    result.cleanup_note = Some(e.clone());
+                    let _ = app_for_thread.emit("live-photo-progress", serde_json::json!({
+                        "task_id": result.task_id,
+                        "job_id": result.job_id,
+                        "line": format!("保留任务记录：{}", e),
+                    }));
+                }
+            }
+        }
         let _ = app_for_thread.emit("live-photo-finished", serde_json::json!(result));
         crate::live_photo::write_notification(&result);
         crate::live_photo::release();
@@ -2503,7 +2962,9 @@ pub async fn live_photo_probe() -> Result<serde_json::Value, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{make_task_name, csv_field, csv_cell, render_logs_csv, rewrite_path_prefix, validate_project_folder_name, LogEntry};
+    use super::{make_task_folder_name, make_task_name, allocate_task_folder, read_task_meta, count_round_images, task_folder_status, json_i64, csv_field, csv_cell, render_logs_csv, rewrite_path_prefix, validate_project_folder_name, LogEntry};
+    use crate::task_scheduler;
+    use chrono::Utc;
 
     #[test]
     fn csv_field_escapes_comma_quote_and_newline() {
@@ -2578,6 +3039,62 @@ mod tests {
     fn make_task_name_empty_falls_back_to_default() {
         let name = make_task_name("   ");
         assert!(name.starts_with("任务-"));
+    }
+
+    #[test]
+    fn task_folder_name_includes_timestamp() {
+        let a = make_task_folder_name("  奶瓶收纳盒生图  ");
+        assert!(a.starts_with("奶瓶收纳盒生图-"));
+        // 带日期-时分秒-毫秒，至少比「项目名-日期」长；唯一性由 allocate_task_folder 的磁盘检测保证
+        assert!(a.chars().count() >= "奶瓶收纳盒生图-2026-11-06-000000-000".chars().count());
+    }
+
+    #[test]
+    fn allocate_task_folder_avoids_existing_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "ai-image-generate-folder-test-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_millis()
+        ));
+        let output = root.join("output");
+        std::fs::create_dir_all(&output).unwrap();
+        let first = allocate_task_folder(&output, "奶瓶收纳盒生图");
+        std::fs::create_dir_all(output.join(&first)).unwrap();
+        let second = allocate_task_folder(&output, "奶瓶收纳盒生图");
+        assert_ne!(first, second, "已存在的目录名不能被再次分配");
+        assert!(!output.join(&second).exists(), "分配结果必须尚未占用");
+        let meta = task_scheduler::write_task_meta(
+            &root, &second, 7, 3, 2, 1, "2026-11-24T00:00:00Z",
+        ).unwrap();
+        let text = std::fs::read_to_string(meta.join("task.meta.json")).unwrap();
+        assert!(text.contains("\"task_id\": 7"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn task_folder_scan_reads_meta_and_counts_images() {
+        let root = std::env::temp_dir().join(format!(
+            "ai-image-generate-scan-test-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_millis()
+        ));
+        let folder = root.join("output").join("奶瓶收纳盒生图-2026-11-24-142434-207");
+        let round = folder.join("20261124_142500_100");
+        std::fs::create_dir_all(&round).unwrap();
+        std::fs::write(
+            folder.join("task.meta.json"),
+            r#"{"schema":1,"task_id":42,"folder":"奶瓶收纳盒生图-2026-11-24-142434-207","total_rounds":2,"created_at":"2026-11-24T00:00:00Z"}"#,
+        ).unwrap();
+        std::fs::write(round.join("task.json"), r#"{"round_number":1}"#).unwrap();
+        std::fs::write(round.join("001.png"), b"fake").unwrap();
+        std::fs::write(round.join("prompt.txt"), b"prompt").unwrap();
+
+        let meta = read_task_meta(&folder).unwrap();
+        assert_eq!(json_i64(&meta, "task_id"), Some(42));
+        let (count, _) = count_round_images(&round);
+        assert_eq!(count, 1, "元数据文件不能计入图片数");
+        assert_eq!(task_folder_status(&meta, "奶瓶收纳盒生图-2026-11-24-142434-207", count > 0), "pending_review");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

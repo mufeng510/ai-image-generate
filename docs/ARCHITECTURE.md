@@ -243,7 +243,12 @@ ai-image-generate/
 | `task_resume` | 继续任务 | `id` | `Result` |
 | `task_continue` | 人工干预后继续任务 | `id` | `Result` |
 | `task_cancel` | 取消任务 | `id` | `Result` |
-| `task_list` | 列出任务 | - | `Vec<Task>` |
+| `project_task_folders` | 列出项目下现存任务文件夹（文件夹即任务记录） | `project_id` | `Vec<TaskFolder>` |
+| `task_folder_detail` | 从文件夹里的 task.json 读取轮次与图片 | `project_id, folder` | `TaskFolderDetail` |
+| `task_folder_open` | 打开任务/轮次文件夹 | `project_id, folder, round?` | `Result` |
+| `task_folder_delete_image` | 筛选时删除单张图片并同步元数据 | `project_id, folder, round, file` | `Result` |
+| `task_folder_locator` | 由 task_id 定位项目与文件夹 | `task_id` | `(i64, String)?` |
+| `task_list` | 列出运行中的任务（仅执行态） | - | `Vec<Task>` |
 | `task_detail` | 任务详情 | `id` | `TaskDetail` |
 | `settings_get` | 获取设置 | `key` | `String` |
 | `settings_set` | 设置设置 | `key, value` | `Result` |
@@ -252,7 +257,7 @@ ai-image-generate/
 | `live_photo_probe` | 设置页测试：校验 AI Image Process 目录能找到 CLI 与默认输出目录 | - | `{cli, output_dir}` |
 | `task_image_delete` | 删除单张生成图片：校验路径在该轮次 output_dir 内后删除磁盘文件与数据库记录，重算轮次成功数；不可逆，前端需确认 | `id` | `success_count` |
 
-> 「生成实况图片」通过新增模块 `live_photo.rs` 实现：输入目录用 `task_output_dir()` 直接算出（任务名 + 项目根），CLI 开启 `input.recurse_folders=true` 覆盖全部轮次；输出到 AIP 自己配置的默认目录，本软件不保留产物。详见 `docs/LIVE_PHOTO_INTEGRATION.md`。
+> 「生成实况图片」由 `live_photo.rs` 实现：输入目录从 `tasks.output_folder`（旧数据回落任务名）+ 项目根算出，CLI 开启 `input.recurse_folders=true` 覆盖全部轮次；输出到 AIP 自己配置的默认目录。AIP 0.10+ 通过 `--delete-originals` 在成功后删除任务文件夹，软件确认 `originals_deleted>0` 且目录不存在后事务清理任务记录；旧版自动保留原件。详见 `docs/LIVE_PHOTO_INTEGRATION.md`。
 
 ### 5.2 Events (后端 → 前端)
 

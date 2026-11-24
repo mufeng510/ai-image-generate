@@ -24,6 +24,7 @@ import {
   projectGenParamsSet,
   projectExpectedImagesGet,
   projectExpectedImagesSet,
+  projectBackfillTaskMeta,
   GEN_MODEL_OPTIONS,
   GEN_RATIO_OPTIONS,
   GEN_STYLE_OPTIONS,
@@ -93,7 +94,7 @@ const modalCard: React.CSSProperties = {
   overflow: 'auto',
 }
 
-export default function ProjectsPage() {
+export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projectId: number, name: string) => void }) {
   const { t } = useI18n()
   const STATUS_LABELS = useTaskStatusLabels()
   const [projects, setProjects] = useState<Project[]>([])
@@ -459,11 +460,27 @@ export default function ProjectsPage() {
                     </button>
                   </td>
                   <td style={{ padding: '12px', whiteSpace: 'nowrap' }}>
+                    <button onClick={() => onOpenProject(id, p.name)} style={{ ...actionStyle, background: '#166534', color: '#fff', border: '1px solid #166534' }}>
+                      {t('projects.enter')}
+                    </button>
                     <button onClick={() => handleOpenGenParams(p)} style={actionStyle}>
                       {t('projects.params')}
                     </button>
                     <button onClick={() => handleOpenPrompt(p)} style={actionStyle}>
                       {t('btn.prompt')}
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!window.confirm(t('projects.backfillConfirm'))) return
+                        try {
+                          const n = await projectBackfillTaskMeta(id)
+                          alert(t('projects.backfillDone', { n }))
+                        } catch (e) { alert(t('projects.backfillFailed') + e) }
+                      }}
+                      style={actionStyle}
+                      title={t('projects.backfillHint')}
+                    >
+                      {t('projects.backfill')}
                     </button>
                     <button onClick={() => handleOpenHistory(p)} style={actionStyle}>
                       {t('btn.history')}

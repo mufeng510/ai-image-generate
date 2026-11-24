@@ -111,6 +111,56 @@ export interface TaskImage {
   download_status?: string
 }
 
+/** 任务详情定位：文件夹是记录真相源，task_id 仅供仍存在的运行中任务操作使用 */
+export interface FolderSelection {
+  projectId: number
+  folder: string
+  taskId?: number
+}
+
+/** 一条「文件夹即任务」记录：由后端扫描项目 output 目录得到 */
+export interface TaskFolder {
+  folder: string
+  name: string
+  task_id?: number
+  project_id?: number
+  account_id?: number
+  total_rounds: number
+  round_count: number
+  image_count: number
+  /** generating / pending_review / converted / empty */
+  status: string
+  created_at?: string
+  updated_at?: string
+  path: string
+}
+
+export interface TaskFolderImage {
+  file: string
+  path: string
+  index?: number
+  sha256?: string
+  size?: number
+  format?: string
+  ok?: boolean
+}
+
+export interface TaskFolderRound {
+  dir: string
+  round_number?: number
+  prompt?: string
+  image_count: number
+  images: TaskFolderImage[]
+}
+
+export interface TaskFolderDetail {
+  folder: string
+  path: string
+  total_rounds: number
+  status: string
+  rounds: TaskFolderRound[]
+}
+
 export interface Setting {
   key: string
   value: string
@@ -327,6 +377,41 @@ export async function taskList(): Promise<Task[]> {
   return invoke('task_list')
 }
 
+export async function projectTaskFolders(projectId: number): Promise<TaskFolder[]> {
+  return invoke('project_task_folders', { project_id: projectId })
+}
+
+export async function taskFolderDetail(projectId: number, folder: string): Promise<TaskFolderDetail> {
+  return invoke('task_folder_detail', { project_id: projectId, folder })
+}
+
+export async function taskFolderOpen(projectId: number, folder: string, round?: string): Promise<void> {
+  return invoke('task_folder_open', { project_id: projectId, folder, round: round ?? null })
+}
+
+export async function taskFolderLocator(taskId: number): Promise<[number, string] | null> {
+  return invoke('task_folder_locator', { task_id: taskId })
+}
+
+/** 一次性维护：为老任务文件夹回填 task.meta.json，返回回填数量 */
+export async function projectBackfillTaskMeta(projectId: number): Promise<number> {
+  return invoke('project_backfill_task_meta', { project_id: projectId })
+}
+
+/** 一次性维护：清理文件夹已不存在的任务记录，返回清理数量 */
+export async function cleanupStaleTaskRecords(): Promise<number> {
+  return invoke('cleanup_stale_task_records')
+}
+
+export async function taskFolderDeleteImage(
+  projectId: number,
+  folder: string,
+  round: string,
+  file: string,
+): Promise<void> {
+  return invoke('task_folder_delete_image', { project_id: projectId, folder, round, file })
+}
+
 export async function taskCreate(project_id: number, account_id: number | null, rounds = 1): Promise<Task> {
   return invoke('task_create', { project_id, account_id, rounds })
 }
@@ -419,6 +504,11 @@ export interface LivePhotoFinished {
   preflight_error: string | null
   output_dir: string | null
   error?: string | null
+  /** AIP 0.10+ 摘要里的删除统计；null = 旧版或运行失败 */
+  originals_deleted?: number | null
+  originals_failed?: number | null
+  records_cleaned?: boolean
+  cleanup_note?: string | null
 }
 
 /** 启动「生成实况图片」：把该任务所有轮次的图片交给 AI Image Process 转成实况图片。

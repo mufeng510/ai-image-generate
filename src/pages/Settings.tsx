@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { settingsGet, settingsSet, schedulerAutoRunGet, schedulerAutoRunSet, livePhotoProbe, GEN_MODEL_OPTIONS, GEN_RATIO_OPTIONS, GEN_STYLE_OPTIONS } from '@/hooks/api'
+import { settingsGet, settingsSet, schedulerAutoRunGet, schedulerAutoRunSet, livePhotoProbe, cleanupStaleTaskRecords, GEN_MODEL_OPTIONS, GEN_RATIO_OPTIONS, GEN_STYLE_OPTIONS } from '@/hooks/api'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { useI18n } from '@/i18n'
 import { check, type Update } from '@tauri-apps/plugin-updater'
@@ -28,6 +28,7 @@ export default function SettingsPage() {
   const [expectedImages, setExpectedImages] = useState('5')
   const [deleteConversation, setDeleteConversation] = useState(false)
   const [aipRootDir, setAipRootDir] = useState('')
+  const [deleteSourceAfterLivePhoto, setDeleteSourceAfterLivePhoto] = useState(true)
   const [probingLivePhoto, setProbingLivePhoto] = useState(false)
 
   async function load() {
@@ -57,6 +58,8 @@ export default function SettingsPage() {
     setDeleteConversation(dc === 'true')
     const aip = await settingsGet('aip_root_dir')
     if (aip) setAipRootDir(aip)
+    const del = await settingsGet('live_photo_delete_source')
+    setDeleteSourceAfterLivePhoto(del == null || del === 'true' || del === '1')
     schedulerAutoRunGet().then(setAutoRunGate).catch(() => setAutoRunGate(false))
     getVersion().then(setVersion).catch(() => setVersion('unknown'))
   }
@@ -249,6 +252,33 @@ export default function SettingsPage() {
             <button onClick={() => saveKey('aip_root_dir', () => aipRootDir, setAipRootDir)} style={{ padding: '8px 14px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>{t('btn.save')}</button>
             <button onClick={probeAip} disabled={probingLivePhoto} style={{ padding: '8px 14px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '6px', cursor: probingLivePhoto ? 'not-allowed' : 'pointer' }}>{probingLivePhoto ? t('settings.aipProbing') : t('settings.aipProbe')}</button>
           </div>
+        </div>
+        <div style={{ marginBottom: '16px', padding: '12px', border: '1px solid #e5e5e5', borderRadius: '8px' }}>
+          <div style={{ fontSize: '13px', color: '#374151', marginBottom: '8px' }}>{t('settings.maintenanceTitle')}</div>
+          <p style={{ fontSize: '12px', color: '#9ca3af', margin: '0 0 8px' }}>{t('settings.maintenanceHint')}</p>
+          <button
+            onClick={async () => {
+              if (!window.confirm(t('settings.cleanupStaleConfirm'))) return
+              try {
+                const n = await cleanupStaleTaskRecords()
+                alert(t('settings.cleanupStaleDone', { n }))
+              } catch (e) { alert(t('settings.cleanupStaleFailed') + e) }
+            }}
+            style={{ padding: '8px 14px', background: '#fff', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer' }}
+          >
+            {t('settings.cleanupStale')}
+          </button>
+        </div>
+        <div style={{ marginBottom: '16px', padding: '12px', border: '1px solid #fecaca', borderRadius: '8px', background: '#fff7f7' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#991b1b', fontWeight: 600 }}>
+            <input
+              type="checkbox"
+              checked={deleteSourceAfterLivePhoto}
+              onChange={(e) => toggleSetting('live_photo_delete_source', e.target.checked, setDeleteSourceAfterLivePhoto)}
+            />
+            {t('settings.deleteSourceAfterLivePhoto')}
+          </label>
+          <p style={{ fontSize: '12px', color: '#7f1d1d', margin: '8px 0 0' }}>{t('settings.deleteSourceAfterLivePhotoHint')}</p>
         </div>
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.genParamsGlobal')}</label>

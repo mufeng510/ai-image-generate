@@ -12,7 +12,8 @@
 - **下载校验**：SHA-256 哈希校验，文件大小和内容完整性验证
 - **任务状态机**：支持 pending/preparing/selecting_images/uploading/submitting/generating/downloading/verifying/completed/paused/failed/cancelled/needs_manual_intervention 等状态
 - **异常恢复**：登录失效、验证码、网页结构变化等异常处理，暂停并等待人工处理
-- **生成实况图片**：任务队列页一键调用外部 [AI Image Process](https://github.com/mufeng510/ai-image-process)，把该任务所有轮次的图片批量转为 Apple Live Photo（JPG + MOV，本地动态）；需在设置页配置 AI Image Process 目录，产物输出到该软件自己的默认目录，本软件不保留副本
+- **项目工作台 / 文件夹即任务**：进入项目后，任务列表直接来自 `output/` 下现存的文件夹；一个文件夹一条记录，删除文件夹即删除记录，不堆积历史
+- **生成实况图片**：任务详情页一键调用外部 [AI Image Process](https://github.com/mufeng510/ai-image-process) 0.10.1+，把该任务所有轮次的图片批量转为 Apple Live Photo（JPG + MOV，本地动态）；产物输出到该软件自己的默认目录，本软件不保留副本；可设置成功后自动删除任务文件夹（永久删除，不进回收站），随后软件清理任务记录
 - **国际化**：支持简体中文和英文
 
 ## 代码签名政策（Code signing policy）

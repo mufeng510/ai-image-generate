@@ -1,8 +1,8 @@
 /**
  * src/pages/Execution.tsx
  *
- * 任务执行页面：任务队列管理与实时执行日志。
- * 通过 Tauri Commands 操作任务，通过 Tauri Events 接收实时状态推送。
+ * 任务列表：记录来自项目 output 目录下现存的文件夹（一个文件夹 = 一条任务记录）。
+ * 运行中任务的操作仍走 Tauri Commands，状态变化通过 Tauri Events 推送。
  */
 
 import { useState, useEffect, useCallback } from 'react'
@@ -17,32 +17,26 @@ import {
   taskCancel,
   projectList,
   accountList,
+  projectTaskFolders,
+  taskFolderOpen,
   type Task,
   type Project,
   type Account,
+  type TaskFolder,
+  type FolderSelection,
 } from '@/hooks/api'
 import { listen } from '@tauri-apps/api/event'
 import { useTaskStatusLabels, useConfirmNodeLabels } from '@/utils/taskStatus'
+import { formatDateTime } from '@/utils/datetime'
 
-const STATUS_COLORS: Record<string, string> = {
-  pending: '#6b7280',
-  preparing: '#6b7280',
-  selecting_images: '#6b7280',
-  waiting_confirmation: '#d97706',
-  uploading: '#2563eb',
-  submitting: '#2563eb',
+const FOLDER_STATUS_COLORS: Record<string, string> = {
   generating: '#2563eb',
-  downloading: '#2563eb',
-  verifying: '#2563eb',
-  completed: '#16a34a',
-  partial: '#d97706',
-  paused: '#ea580c',
-  failed: '#dc2626',
-  cancelled: '#6b7280',
-  needs_manual_intervention: '#dc2626',
+  pending_review: '#d97706',
+  converted: '#16a34a',
+  empty: '#6b7280',
 }
 
-/** 正在执行、可被暂停/取消的状态 */
+/** 正在执行、可被暂停/取消的任务状态 */
 const ACTIVE_STATUSES = [
   'preparing',
   'selecting_images',
@@ -54,7 +48,6 @@ const ACTIVE_STATUSES = [
   'verifying',
 ]
 
-/** 可取消的状态：执行中 + 待处理 + 已暂停 + 失败/需人工 */
 const CANCELLABLE_STATUSES = [
   'pending',
   'paused',
@@ -63,10 +56,11 @@ const CANCELLABLE_STATUSES = [
   ...ACTIVE_STATUSES,
 ]
 
-export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: number) => void }) {
+export default function ExecutionPage({ onFolderSelect }: { onFolderSelect: (sel: FolderSelection) => void }) {
   const { t } = useI18n()
   const STATUS_LABELS = useTaskStatusLabels()
   const CONFIRM_NODE_LABELS = useConfirmNodeLabels()
+  const [folders, setFolders] = useState<TaskFolder[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -76,21 +70,24 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
   const [logs, setLogs] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
 
-  const loadTasks = useCallback(async () => {
+  /** 列表真相源：扫描磁盘文件夹；同时拉一份运行中任务用于操作按钮 */
+  const loadFolders = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await taskList()
-      setTasks(data)
+      const ps = await projectList()
+      setProjects(ps)
+      const groups = await Promise.all(ps.map((p) => projectTaskFolders(p.id!)))
+      setFolders(groups.flat())
+      setTasks(await taskList())
     } catch (e) {
-      console.error('加载任务失败:', e)
+      console.error('加载任务文件夹失败:', e)
     } finally {
       setLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    loadTasks()
-    projectList().then(setProjects).catch(() => {})
+    loadFolders()
     accountList().then(setAccounts).catch(() => {})
 
     let unlistenStatus: (() => void) | null = null
@@ -101,32 +98,19 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
         'task-status-changed',
         (event) => {
           const { task_id, status, reason } = event.payload
-          setTasks((prev) =>
-            prev.map((t) => (t.id === task_id ? { ...t, status } : t))
-          )
+          setTasks((prev) => prev.map((x) => (x.id === task_id ? { ...x, status } : x)))
           const base = t('logs.taskStatusChanged', { id: task_id, status })
           addLog(reason ? `${base}（${reason}）` : base)
-        }
+        },
       )
-
-      unlistenComplete = await listen<{ task_id: number }>(
-        'task-completed',
-        (event) => {
-          const { task_id } = event.payload
-          setTasks((prev) =>
-            prev.map((t) => (t.id === task_id ? { ...t, status: 'completed' } : t))
-          )
-          addLog(t('logs.taskCompleted', { id: task_id }))
-        }
-      )
-
-      unlistenLog = await listen<{ level: string; message: string }>(
-        'sidecar-log',
-        (event) => {
-          const { level, message } = event.payload
-          addLog(`[${level}] ${message}`)
-        }
-      )
+      unlistenComplete = await listen<{ task_id: number }>('task-completed', (event) => {
+        addLog(t('logs.taskCompleted', { id: event.payload.task_id }))
+        // 轮次落盘后刷新文件夹汇总（轮次数/图片数）
+        loadFolders()
+      })
+      unlistenLog = await listen<{ level: string; message: string }>('sidecar-log', (event) => {
+        addLog(`[${event.payload.level}] ${event.payload.message}`)
+      })
     })()
 
     return () => {
@@ -134,7 +118,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
       unlistenComplete?.()
       unlistenLog?.()
     }
-  }, [loadTasks])
+  }, [loadFolders])
 
   const addLog = (message: string) => {
     const time = new Date().toLocaleTimeString()
@@ -154,7 +138,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
       setProjectId('')
       setAccountId('')
       setRounds('1')
-      await loadTasks()
+      await loadFolders()
     } catch (err) {
       alert(t('tasks.createFailed') + err)
     } finally {
@@ -165,7 +149,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
   const handleStart = async (id: number) => {
     try {
       await taskStart(id)
-      await loadTasks()
+      await loadFolders()
     } catch (e) {
       alert(t('tasks.startFailed') + e)
     }
@@ -174,18 +158,33 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
   const handleAction = async (id: number, fn: (id: number) => Promise<void>) => {
     try {
       await fn(id)
-      await loadTasks()
+      await loadFolders()
     } catch (e) {
       alert(t('tasks.actionFailed') + e)
     }
   }
+
+  const taskFor = (folder: TaskFolder) => tasks.find((x) => x.id === folder.task_id)
+  /** 全局页只保留运行中或需要人工处理的任务；已完成/待筛选的记录在项目工作台查看 */
+  const visibleFolders = folders.filter((folder) => {
+    if (folder.status === 'generating') return true
+    const task = taskFor(folder)
+    if (!task) return false
+    return [
+      'pending', 'preparing', 'selecting_images', 'waiting_confirmation', 'uploading',
+      'submitting', 'generating', 'downloading', 'verifying', 'paused', 'failed',
+      'needs_manual_intervention',
+    ].includes(task.status)
+  })
+  const folderStatusLabel = (status: string) =>
+    t(`tasks.folderStatus.${status}`) === `tasks.folderStatus.${status}` ? status : t(`tasks.folderStatus.${status}`)
 
   return (
     <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ fontSize: '20px', fontWeight: '600', margin: 0 }}>{t('nav.tasks')}</h2>
         <button
-          onClick={loadTasks}
+          onClick={loadFolders}
           style={{ padding: '6px 12px', border: '1px solid #d1d5db', borderRadius: '6px', background: '#fff', cursor: 'pointer' }}
         >
           {t('btn.refresh')}
@@ -236,102 +235,94 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
       <p style={{ fontSize: '12px', color: '#9ca3af', margin: '-12px 0 0' }}>
         {t('tasks.createHint')}
       </p>
+      <p style={{ fontSize: '12px', color: '#9ca3af', margin: '-12px 0 0' }}>
+        {t('tasks.folderHint')} {t('workspace.allTasksHint')}
+      </p>
 
       <div style={{ background: '#fff', border: '1px solid #e5e5e5', borderRadius: '12px', overflow: 'hidden' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: '#f9fafb' }}>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '12px' }}>ID</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.nameHeader')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '12px' }}>{t('tasks.idHeader')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.folderHeader')}</th>
               <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.statusHeader')}</th>
               <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.projectHeader')}</th>
-              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.accountHeader')}</th>
               <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.progressHeader')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.imageHeader')}</th>
+              <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.updatedHeader')}</th>
               <th style={{ padding: '12px', textAlign: 'left', color: '#6b7280', fontSize: '13px' }}>{t('tasks.actionsHeader')}</th>
             </tr>
           </thead>
           <tbody>
-            {tasks.map((task) => (
-              <tr key={task.id} style={{ borderBottom: '1px solid #e5e5e5', cursor: 'pointer' }} onClick={() => onTaskSelect(task.id!)}>
-                <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>{task.id}</td>
-                <td style={{ padding: '10px', fontSize: '13px', fontWeight: '500' }}>{task.name}</td>
-                <td style={{ padding: '10px' }}>
-                  <span
-                    style={{
-                      display: 'inline-block',
-                      padding: '2px 8px',
-                      borderRadius: '10px',
-                      fontSize: '11px',
-                      fontWeight: '500',
-                      color: '#fff',
-                      backgroundColor: STATUS_COLORS[task.status] || '#6b7280',
-                    }}
-                  >
-                    {STATUS_LABELS[task.status] || task.status}
-                  </span>
-                  {task.status === 'needs_manual_intervention' && task.interrupted_status && (
-                    <span style={{ marginLeft: '6px', fontSize: '11px', color: '#9ca3af' }}>
-                      {t('tasks.lastRun')}: {CONFIRM_NODE_LABELS[task.interrupted_status] || STATUS_LABELS[task.interrupted_status] || task.interrupted_status}
+            {visibleFolders.map((folder) => {
+              const task = taskFor(folder)
+              const projectName = projects.find((p) => p.id === folder.project_id)?.name ?? String(folder.project_id ?? '-')
+              return (
+                <tr
+                  key={folder.folder}
+                  style={{ borderBottom: '1px solid #e5e5e5', cursor: 'pointer' }}
+                  onClick={() => onFolderSelect({ projectId: folder.project_id!, folder: folder.folder, taskId: folder.task_id })}
+                >
+                  <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>{folder.task_id ?? '-'}</td>
+                  <td style={{ padding: '10px', fontSize: '13px', fontWeight: '500' }}>{folder.folder}</td>
+                  <td style={{ padding: '10px' }}>
+                    <span
+                      style={{
+                        display: 'inline-block', padding: '2px 8px', borderRadius: '10px', fontSize: '11px',
+                        fontWeight: 500, color: '#fff', backgroundColor: FOLDER_STATUS_COLORS[folder.status] || '#6b7280',
+                      }}
+                    >
+                      {folderStatusLabel(folder.status)}
                     </span>
-                  )}
-                  {task.status === 'waiting_confirmation' && task.interrupted_status && (
-                    <span style={{ marginLeft: '6px', fontSize: '11px', color: '#9ca3af' }}>
-                      {t('tasks.interrupted')}: {CONFIRM_NODE_LABELS[task.interrupted_status] || task.interrupted_status}
-                    </span>
-                  )}
-                </td>
-                <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>{String(task.project_id ?? '-')}</td>
-                <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>{String(task.account_id ?? '-')}</td>
-                <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>
-                  {task.current_round ?? 0}/{task.total_rounds ?? 0}
-                </td>
-                <td style={{ padding: '10px' }}>
-                  {task.status === 'pending' && (
+                    {task?.status === 'needs_manual_intervention' && task.interrupted_status && (
+                      <span style={{ marginLeft: '6px', fontSize: '11px', color: '#9ca3af' }}>
+                        {t('tasks.lastRun')}: {CONFIRM_NODE_LABELS[task.interrupted_status] || STATUS_LABELS[task.interrupted_status] || task.interrupted_status}
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>{projectName}</td>
+                  <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>{folder.round_count}/{folder.total_rounds}</td>
+                  <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>{folder.image_count}</td>
+                  <td style={{ padding: '10px', fontSize: '12px', color: '#6b7280' }}>{folder.updated_at ? formatDateTime(folder.updated_at) : '-'}</td>
+                  <td style={{ padding: '10px' }}>
                     <button
-                      onClick={(e) => { e.stopPropagation(); handleStart(task.id!) }}
-                      style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}
+                      onClick={(e) => { e.stopPropagation(); taskFolderOpen(folder.project_id!, folder.folder).catch((err) => alert(err)) }}
+                      style={{ background: '#f3f4f6', color: '#374151', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}
                     >
-                      {t('btn.start')}
+                      {t('tasks.folderOpen')}
                     </button>
-                  )}
-                  {ACTIVE_STATUSES.includes(task.status) && task.status !== 'waiting_confirmation' && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleAction(task.id!, taskPause) }}
-                      style={{ background: '#ca8a04', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}
-                    >
-                      {t('btn.pause')}
-                    </button>
-                  )}
-                  {['needs_manual_intervention', 'failed', 'waiting_confirmation'].includes(task.status) && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleAction(task.id!, taskContinue) }}
-                      style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}
-                    >
-                      {t('btn.continueExecution')}
-                    </button>
-                  )}
-                  {task.status === 'paused' && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleAction(task.id!, taskResume) }}
-                      style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}
-                    >
-                      {t('btn.continue')}
-                    </button>
-                  )}
-                  {CANCELLABLE_STATUSES.includes(task.status) && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleAction(task.id!, taskCancel) }}
-                      style={{ background: '#dc2626', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
-                    >
-                      {t('btn.cancel')}
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {tasks.length === 0 && (
+                    {task?.status === 'pending' && (
+                      <button onClick={(e) => { e.stopPropagation(); handleStart(task.id!) }} style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}>
+                        {t('btn.start')}
+                      </button>
+                    )}
+                    {task && ACTIVE_STATUSES.includes(task.status) && task.status !== 'waiting_confirmation' && (
+                      <button onClick={(e) => { e.stopPropagation(); handleAction(task.id!, taskPause) }} style={{ background: '#ca8a04', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}>
+                        {t('btn.pause')}
+                      </button>
+                    )}
+                    {task && ['needs_manual_intervention', 'failed', 'waiting_confirmation'].includes(task.status) && (
+                      <button onClick={(e) => { e.stopPropagation(); handleAction(task.id!, taskContinue) }} style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}>
+                        {t('btn.continueExecution')}
+                      </button>
+                    )}
+                    {task?.status === 'paused' && (
+                      <button onClick={(e) => { e.stopPropagation(); handleAction(task.id!, taskResume) }} style={{ background: '#166534', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}>
+                        {t('btn.continue')}
+                      </button>
+                    )}
+                    {task && CANCELLABLE_STATUSES.includes(task.status) && (
+                      <button onClick={(e) => { e.stopPropagation(); handleAction(task.id!, taskCancel) }} style={{ background: '#dc2626', color: '#fff', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+                        {t('btn.cancel')}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+            {visibleFolders.length === 0 && (
               <tr>
-                <td colSpan={7} style={{ padding: '24px', textAlign: 'center', color: '#9ca3af' }}>
+                <td colSpan={8} style={{ padding: '24px', textAlign: 'center', color: '#9ca3af' }}>
                   {t('tasks.noTasks')}
                 </td>
               </tr>
@@ -352,11 +343,7 @@ export default function ExecutionPage({ onTaskSelect }: { onTaskSelect: (id: num
         </div>
         <div style={{ padding: '12px 16px', overflowY: 'auto', fontFamily: 'monospace', fontSize: '12px', lineHeight: '1.5', color: '#d1d5db', background: '#0f0f0f' }}>
           {logs.length > 0 ? (
-            logs.map((log, i) => (
-              <div key={i} style={{ marginBottom: '4px', whiteSpace: 'pre-wrap' }}>
-                {log}
-              </div>
-            ))
+            logs.map((log, i) => <div key={i} style={{ marginBottom: '4px', whiteSpace: 'pre-wrap' }}>{log}</div>)
           ) : (
             <div style={{ color: '#6b7280', paddingTop: '20px' }}>{t('logs.none')}</div>
           )}

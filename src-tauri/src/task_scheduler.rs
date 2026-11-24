@@ -473,9 +473,14 @@ fn db_update_task_status(conn: &Connection, task_id: i64, status: &str) -> Resul
 /** 数据库：写入执行日志 */
 fn db_write_log(conn: &Connection, task_id: Option<i64>, level: &str, message: &str) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
+    // 任务名快照：任务行被清理后日志仍可读
+    let task_name: Option<String> = match task_id {
+        Some(id) => conn.query_row("SELECT name FROM tasks WHERE id = ?1", [id], |r| r.get(0)).ok(),
+        None => None,
+    };
     conn.execute(
-        "INSERT INTO execution_logs (task_id, level, message, created_at) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![task_id, level, message, now],
+        "INSERT INTO execution_logs (task_id, task_name, level, message, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![task_id, task_name, level, message, now],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -1180,6 +1185,36 @@ pub(crate) fn task_output_dir(output_root: &std::path::Path, task_name: &str) ->
     output_root.join(sanitize_dir_component(task_name))
 }
 
+/**
+ * 任务清单：创建任务时落盘到任务文件夹根部，作为「文件夹即任务记录」的扫描入口。
+ * 只读镜像，不参与调度；即使数据库行被清理，文件夹自己仍可描述这条任务。
+ */
+pub(crate) fn write_task_meta(
+    project_root: &std::path::Path,
+    folder: &str,
+    tid: i64,
+    project_id: i64,
+    account_id: i64,
+    total_rounds: i64,
+    created_at: &str,
+) -> Result<std::path::PathBuf, String> {
+    let task_dir = task_output_dir(&project_root.join("output"), folder);
+    std::fs::create_dir_all(&task_dir).map_err(|e| format!("创建任务文件夹失败：{}", e))?;
+    let payload = serde_json::json!({
+        "schema": 1,
+        "task_id": tid,
+        "project_id": project_id,
+        "account_id": account_id,
+        "folder": folder,
+        "total_rounds": total_rounds,
+        "created_at": created_at,
+    });
+    let text = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
+    std::fs::write(task_dir.join("task.meta.json"), text)
+        .map_err(|e| format!("写入任务清单失败：{}", e))?;
+    Ok(task_dir)
+}
+
 /** 读取任务名称（输出目录命名用）；查询失败回落「任务」 */
 fn load_task_name(tid: i64) -> String {
     get_connection()
@@ -1192,6 +1227,25 @@ fn load_task_name(tid: i64) -> String {
         })
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "任务".to_string())
+}
+
+/**
+ * 读取任务的输出文件夹名：优先 tasks.output_folder；
+ * 旧数据没有该列值时回落到清洗后的任务名，保证历史目录仍可访问。
+ */
+pub(crate) fn load_task_folder(tid: i64) -> String {
+    let fallback = sanitize_dir_component(&load_task_name(tid));
+    get_connection()
+        .ok()
+        .and_then(|conn| {
+            conn.query_row("SELECT output_folder FROM tasks WHERE id = ?1", [tid], |row| {
+                row.get::<_, Option<String>>(0)
+            })
+            .ok()
+        })
+        .flatten()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(fallback)
 }
 
 /**
@@ -1344,16 +1398,35 @@ fn pick_cursor_index(eligible_len: usize, cursor: i64) -> usize {
 }
 
 fn account_verified_images(conn: &rusqlite::Connection, account_id: i64) -> i64 {
+    // 任务记录被清理后明细行会消失，因此以持久化计数为准
     conn.query_row(
-        "SELECT COUNT(*)
-           FROM task_images ti
-           JOIN task_rounds tr ON ti.task_round_id = tr.id
-           JOIN tasks t ON tr.task_id = t.id
-          WHERE t.account_id = ?1 AND ti.download_status = 'verified'",
+        "SELECT COALESCE(persisted_verified_images, 0) FROM accounts WHERE id = ?1",
         [account_id],
         |r| r.get(0),
     )
     .unwrap_or(0)
+}
+
+/** 在删除任务明细前，把账号的累计成功图片数/完成轮次固化到 accounts */
+pub(crate) fn refresh_account_persisted_stats(conn: &Connection, account_id: i64) -> Result<(), String> {
+    let verified: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM task_images ti
+           JOIN task_rounds tr ON ti.task_round_id = tr.id
+           JOIN tasks t ON tr.task_id = t.id
+          WHERE t.account_id = ?1 AND ti.download_status = 'verified'",
+        [account_id], |r| r.get(0),
+    ).unwrap_or(0);
+    let completed: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM task_rounds tr
+           JOIN tasks t ON tr.task_id = t.id
+          WHERE t.account_id = ?1 AND tr.status = 'completed'",
+        [account_id], |r| r.get(0),
+    ).unwrap_or(0);
+    conn.execute(
+        "UPDATE accounts SET persisted_verified_images = ?1, persisted_completed_rounds = ?2 WHERE id = ?3",
+        rusqlite::params![verified, completed, account_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn account_image_threshold(conn: &rusqlite::Connection, account_id: i64) -> Result<Option<i64>, String> {
@@ -1687,7 +1760,7 @@ async fn run_single_round(
     }
 
     // 本轮输出目录（任务专属目录 output/<任务名>/ 之下，每轮一个毫秒时间戳子目录）+ 元数据文件（prompt.txt / references.json）
-    let task_output_root = task_output_dir(&project_root.join("output"), &load_task_name(tid));
+    let task_output_root = task_output_dir(&project_root.join("output"), &load_task_folder(tid));
     let output_dir = allocate_round_dir(&task_output_root);
     if let Err(e) = std::fs::create_dir_all(&output_dir) {
         set_task_status(app, tid, "failed", &format!("创建输出目录失败: {}", e));
@@ -2263,6 +2336,8 @@ async fn finish_after_generation(
         );
         let _ = db_write_log(&tx, Some(tid), "info",
             &format!("本轮下载完成：成功 {}/{} 张", success_count, total));
+        // 固化账号累计统计：后续转实况清理明细行后仍不归零
+        let _ = refresh_account_persisted_stats(&tx, account_id);
         if let Err(e) = tx.commit() {
             set_task_status(&app, tid, "failed", &format!("提交校验事务失败: {}", e));
             return None;

@@ -9,9 +9,10 @@
  *     task_output_dir() 直接算出；CLI 开启递归后覆盖全部轮次子目录。
  *   - 输出使用 AI Image Process 自己配置的默认输出目录（config.json 的
  *     output.directory），本软件不接收、不搬运产物。
- *   - 临时配置开启递归、开启本地动态 Live Photo、并强制 delete_originals=false
- *     保护原图；隐藏图片等其他步骤沿用用户在 AIP 里的配置，失败时按 AIP 的
- *     预检/处理结果原样报错。
+ *   - 临时配置开启递归、开启本地动态 Live Photo；是否在成功后删除任务文件夹
+ *     由设置项 live_photo_delete_source 决定，并通过 AIP 0.10+ 的
+ *     --delete-originals / --no-delete-originals 显式传参，避免继承配置产生歧义。
+ *   - 隐藏图片等其他步骤沿用用户在 AIP 里的配置，失败时按 AIP 的预检/处理结果原样报错。
  *   - CLI 可能跑几分钟：命令立即返回 job_id，后台线程执行并通过事件汇报。
  */
 
@@ -67,6 +68,10 @@ pub struct Prepared {
     pub input_dir: PathBuf,
     pub output_dir: PathBuf,
     pub config_path: PathBuf,
+    /// 用户设置：成功后删除任务文件夹
+    pub delete_source: bool,
+    /// AIP >= 0.10 才支持 --delete-originals；旧版自动回退为保留原件
+    pub delete_supported: bool,
 }
 
 /// 终态事件载荷（与前端 `LivePhotoFinished` 对应）
@@ -81,6 +86,41 @@ pub struct LivePhotoFinished {
     pub preflight_error: Option<String>,
     pub output_dir: Option<String>,
     pub error: Option<String>,
+    /// AIP 摘要中的删除统计（0.10+ 才有）
+    pub originals_deleted: Option<i64>,
+    pub originals_failed: Option<i64>,
+    /// 软件是否已确认文件夹消失并清理了数据库记录
+    pub records_cleaned: bool,
+    pub cleanup_note: Option<String>,
+}
+
+/**
+ * 实况成功后清理任务记录：只有 CLI 明确报告删掉原件且文件夹已不存在才执行。
+ * 软件绝不自行删除用户文件夹，删源图完全由 AIP 负责。
+ */
+pub fn cleanup_task_records(task_id: i64, input_dir: &Path, deleted: Option<i64>) -> Result<(), String> {
+    if deleted.unwrap_or(0) <= 0 {
+        return Err("AI Image Process 未报告删除原件，保留任务记录".to_string());
+    }
+    if input_dir.exists() {
+        return Err(format!("任务文件夹仍存在（{}），保留任务记录", input_dir.display()));
+    }
+    let conn = get_connection()?;
+    let account_id: Option<i64> = conn.query_row(
+        "SELECT account_id FROM tasks WHERE id = ?1", [task_id], |r| r.get(0),
+    ).ok();
+    if let Some(account_id) = account_id {
+        crate::task_scheduler::refresh_account_persisted_stats(&conn, account_id)?;
+    }
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM task_images WHERE task_round_id IN (SELECT id FROM task_rounds WHERE task_id = ?1)",
+        [task_id],
+    ).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM task_rounds WHERE task_id = ?1", [task_id]).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM tasks WHERE id = ?1", [task_id]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /** 在目录里寻找 CLI：优先打包版入口，其次源码版 venv python */
@@ -169,17 +209,20 @@ pub fn default_output_dir(cfg: &Value, aip_root: &Path) -> Result<PathBuf, Strin
     })
 }
 
-/** 任务文件夹：<项目根>/output/<清洗后的任务名>/，复用调度器的同名函数 */
+/** 任务文件夹：<项目根>/output/<任务文件夹名>/；旧数据回落到清洗后的任务名 */
 pub fn task_input_dir(task_id: i64) -> Result<PathBuf, String> {
     let conn = get_connection()?;
-    let (name, root): (String, String) = conn
+    let (name, folder, root): (String, Option<String>, String) = conn
         .query_row(
-            "SELECT t.name, p.root_path FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id = ?1",
+            "SELECT t.name, t.output_folder, p.root_path FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id = ?1",
             [task_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|e| format!("读取任务信息失败：{}", e))?;
-    let dir = task_output_dir(&PathBuf::from(root).join("output"), &name);
+    let folder_name = folder
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| crate::task_scheduler::sanitize_dir_component(&name));
+    let dir = task_output_dir(&PathBuf::from(root).join("output"), &folder_name);
     if !dir.is_dir() {
         return Err(format!("该任务尚无输出目录：{}", dir.display()));
     }
@@ -236,9 +279,9 @@ fn ensure_object(cfg: &mut Value, key: &str) {
     }
 }
 
-/// 基于用户 AIP 配置生成一次性配置：递归开、本地动态、禁止删原件；
-/// 隐藏图片等其他步骤保持用户原样（失败就按 AIP 的处理结果报错）。
-fn build_run_config(aip_cfg: &Value, output_dir: &Path, job_id: &str) -> Result<PathBuf, String> {
+/// 合并运行覆盖：递归开、本地动态；删除原件由命令行开关决定，
+/// 因此这里不再强制 false，也不擅自改成 true。隐藏图片等步骤保持用户原样。
+fn apply_run_overrides(aip_cfg: &Value, output_dir: &Path) -> Value {
     let mut cfg = aip_cfg.clone();
     if !cfg.is_object() {
         cfg = json!({});
@@ -250,12 +293,16 @@ fn build_run_config(aip_cfg: &Value, output_dir: &Path, job_id: &str) -> Result<
 
     cfg["config_version"] = json!(2);
     cfg["input"]["recurse_folders"] = json!(true);
-    cfg["input"]["delete_originals_after_run"] = json!(false);
     cfg["output"]["use_source_directory"] = json!(false);
     cfg["output"]["directory"] = json!(output_dir.to_string_lossy());
     cfg["steps"]["live_photo"]["enabled"] = json!(true);
     cfg["steps"]["live_photo"]["video_source"] = json!("local_motion");
+    cfg
+}
 
+/// 基于用户 AIP 配置生成一次性配置文件。
+fn build_run_config(aip_cfg: &Value, output_dir: &Path, job_id: &str) -> Result<PathBuf, String> {
+    let cfg = apply_run_overrides(aip_cfg, output_dir);
     let dir = app_data_dir()?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("创建临时配置目录失败：{}", e))?;
@@ -266,6 +313,58 @@ fn build_run_config(aip_cfg: &Value, output_dir: &Path, job_id: &str) -> Result<
     )
     .map_err(|e| format!("写入临时配置失败：{}", e))?;
     Ok(path)
+}
+
+/// 是否删除任务文件夹：用户设置默认开启（转实况后原件已无用）。
+fn read_delete_source_setting() -> bool {
+    get_connection()
+        .ok()
+        .and_then(|conn| {
+            conn.query_row(
+                "SELECT value FROM app_settings WHERE key = 'live_photo_delete_source'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+        })
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true)
+}
+
+/// AIP 0.10+ 才支持 --delete-originals；旧版回退为保留原件，不传未知参数。
+fn detect_delete_support(cli: &ResolvedCli) -> bool {
+    let mut cmd = Command::new(&cli.program);
+    for arg in &cli.pre_args {
+        cmd.arg(arg);
+    }
+    cmd.arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(_) => return false,
+    };
+    version_supports_delete(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// 从 `--version` 输出里判断是否为 AIP >= 0.10（0.9.x 不支持删除开关）
+fn version_supports_delete(text: &str) -> bool {
+    for token in text.split_whitespace() {
+        let trimmed = token.trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
+        let parts: Vec<&str> = trimmed.split('.').collect();
+        if parts.len() >= 2 {
+            if let (Ok(major), Ok(minor)) = (parts[0].parse::<u64>(), parts[1].parse::<u64>()) {
+                return major > 0 || minor >= 10;
+            }
+        }
+    }
+    false
 }
 
 /// 同步校验 + 准备工作，全部成功后才启动后台线程。
@@ -281,6 +380,8 @@ pub fn prepare(task_id: i64, aip_root_str: String) -> Result<Prepared, String> {
     verify_path_safety(&input_dir, &output_dir)?;
     let job_id = new_job_id();
     let config_path = build_run_config(&aip_cfg, &output_dir, &job_id)?;
+    let delete_source = read_delete_source_setting();
+    let delete_supported = detect_delete_support(&cli);
     Ok(Prepared {
         job_id,
         task_id,
@@ -288,6 +389,8 @@ pub fn prepare(task_id: i64, aip_root_str: String) -> Result<Prepared, String> {
         input_dir,
         output_dir,
         config_path,
+        delete_source,
+        delete_supported,
     })
 }
 
@@ -300,7 +403,22 @@ pub fn execute(app: &AppHandle, prepared: Prepared) -> LivePhotoFinished {
         input_dir,
         output_dir,
         config_path,
+        delete_source,
+        delete_supported,
     } = prepared;
+
+    // 旧版 AIP 不认识 --delete-originals，自动回退为保留原件并明确提示
+    let do_delete = delete_source && delete_supported;
+    if delete_source && !delete_supported {
+        let _ = app.emit(
+            "live-photo-progress",
+            json!({
+                "task_id": task_id,
+                "job_id": job_id,
+                "line": "当前 AI Image Process 版本低于 0.10，不支持自动删除原件，已按保留原件执行。",
+            }),
+        );
+    }
 
     let mut cmd = Command::new(&cli.program);
     for arg in &cli.pre_args {
@@ -314,6 +432,7 @@ pub fn execute(app: &AppHandle, prepared: Prepared) -> LivePhotoFinished {
         .arg("--enable-live-photo")
         .arg("--video-source")
         .arg("local_motion")
+        .arg(if do_delete { "--delete-originals" } else { "--no-delete-originals" })
         .arg("--json-summary")
         .current_dir(&cli.cwd)
         .env("PYTHONIOENCODING", "utf-8")
@@ -432,6 +551,8 @@ pub fn execute(app: &AppHandle, prepared: Prepared) -> LivePhotoFinished {
         .get("preflight_error")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let originals_deleted = summary.get("originals_deleted").and_then(|v| v.as_i64());
+    let originals_failed = summary.get("originals_failed").and_then(|v| v.as_i64());
 
     let mut error: Option<String> = None;
     if preflight_failed {
@@ -454,6 +575,10 @@ pub fn execute(app: &AppHandle, prepared: Prepared) -> LivePhotoFinished {
         preflight_error,
         output_dir: Some(output_dir.to_string_lossy().to_string()),
         error,
+        originals_deleted,
+        originals_failed,
+        records_cleaned: false,
+        cleanup_note: None,
     }
 }
 
@@ -468,6 +593,10 @@ fn failure(job_id: &str, task_id: i64, output_dir: &Path, message: String) -> Li
         preflight_error: None,
         output_dir: Some(output_dir.to_string_lossy().to_string()),
         error: Some(message),
+        originals_deleted: None,
+        originals_failed: None,
+        records_cleaned: false,
+        cleanup_note: None,
     }
 }
 
@@ -488,9 +617,12 @@ pub fn write_notification(result: &LivePhotoFinished) {
     let level = if result.ok { "success" } else { "error" };
     if let Ok(conn) = get_connection() {
         let now = Utc::now().to_rfc3339();
+        let task_name: Option<String> = conn.query_row(
+            "SELECT name FROM tasks WHERE id = ?1", [result.task_id], |r| r.get(0),
+        ).ok();
         let _ = conn.execute(
-            "INSERT INTO notifications (kind, title, message, level, task_id, read, created_at) VALUES ('live_photo', ?1, ?2, ?3, ?4, 0, ?5)",
-            rusqlite::params![title, detail, level, result.task_id, now],
+            "INSERT INTO notifications (kind, title, message, level, task_id, task_name, read, created_at) VALUES ('live_photo', ?1, ?2, ?3, ?4, ?5, 0, ?6)",
+            rusqlite::params![title, detail, level, result.task_id, task_name, now],
         );
     }
 }
@@ -514,24 +646,23 @@ mod tests {
             "steps": {"hidden_image": {"enabled": true}, "live_photo": {"video_source": "ai_video"}},
             "input": {"delete_originals_after_run": true}
         });
-        let mut cfg = base;
-        ensure_object(&mut cfg, "input");
-        ensure_object(&mut cfg, "output");
-        ensure_object(&mut cfg, "steps");
-        ensure_object(&mut cfg["steps"], "live_photo");
-        cfg["config_version"] = json!(2);
-        cfg["input"]["recurse_folders"] = json!(true);
-        cfg["input"]["delete_originals_after_run"] = json!(false);
-        cfg["output"]["use_source_directory"] = json!(false);
-        cfg["steps"]["live_photo"]["enabled"] = json!(true);
-        cfg["steps"]["live_photo"]["video_source"] = json!("local_motion");
+        let cfg = apply_run_overrides(&base, Path::new(r"C:\aip\out"));
 
         assert_eq!(cfg["config_version"], json!(2));
         assert_eq!(cfg["input"]["recurse_folders"], json!(true));
-        assert_eq!(cfg["input"]["delete_originals_after_run"], json!(false));
+        // 删除原件不再写进配置：由 --delete-originals / --no-delete-originals 显式控制
+        assert_eq!(cfg["input"]["delete_originals_after_run"], json!(true));
         // 隐藏图片步骤沿用用户配置，不被强制关闭；失败由 AIP 自行报错。
         assert_eq!(cfg["steps"]["hidden_image"]["enabled"], json!(true));
         assert_eq!(cfg["steps"]["live_photo"]["video_source"], json!("local_motion"));
+    }
+
+    #[test]
+    fn version_gate_allows_only_aip_010_plus() {
+        assert!(version_supports_delete("ai-image-process 0.10.1"));
+        assert!(version_supports_delete("ai-image-process 1.2.0"));
+        assert!(!version_supports_delete("ai-image-process 0.9.2"));
+        assert!(!version_supports_delete(""));
     }
 
     #[test]

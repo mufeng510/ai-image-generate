@@ -1,7 +1,7 @@
-# 任务队列接入 AI Image Process「生成实况图片」实施方案
+# 任务文件夹接入 AI Image Process「生成实况图片」实施方案
 
-状态：**方案待实施**（已完成可行性与关键行为实测，尚未写业务代码）
-适用版本：`ai-image-generate` v1.5.0（Tauri 2 + React + Rust + SQLite）／`ai-image-process` v0.9.2
+状态：**已实施**（v1.6.0；输入/输出/事件/通知/清理均已接线，真实端到端待最终验收）
+适用版本：`ai-image-generate` v1.6.0（Tauri 2 + React + Rust + SQLite）／`ai-image-process` v0.10.1
 
 ---
 
@@ -9,7 +9,8 @@
 
 | # | 需求 | 落地方式 |
 |---|------|----------|
-| 1 | 处理**整个任务的所有轮次** | 传入**任务文件夹本身**（`<项目>/output/<清洗后的任务名>/`，由任务名+项目根直接算出），开启 AI Image Process 的递归扫描 `input.recurse_folders=true`，一次调用覆盖全部轮次子目录 |
+| 1 | 处理**整个任务的所有轮次** | 传入**任务文件夹本身**（`<项目>/output/<唯一任务文件夹名>/`，从 `tasks.output_folder` 读取，旧数据回落清洗后的任务名），开启 AI Image Process 的递归扫描 `input.recurse_folders=true`，一次调用覆盖全部轮次子目录 |
+| 5 | 转实况成功后任务记录消失 | AIP 0.10+ 的 `--delete-originals` 删除整个任务文件夹；软件确认 `originals_deleted>0` 且文件夹不存在后，事务清理 `task_images`/`task_rounds`/`tasks`；旧版 AIP 自动回退为保留原件 |
 | 2 | AI Image Process 自带运行时，只需在设置页配置它的目录 | 新增设置项 `aip_root_dir`，从该目录解析 CLI 可执行文件；不随本软件打包 |
 | 3 | 输出到 AI Image Process 自己的默认输出目录，本项目不保留实况图片 | 读取 AIP 配置里的 `output.directory` 作为 `-o` 参数；本软件不接收、不搬运产物，只在日志里报告结果 |
 | 4 | 实况视频来源使用**本地动态** | 固定 `--enable-live-photo --video-source local_motion`，并在配置中锁定 `steps.live_photo.enabled=true` |
@@ -96,8 +97,10 @@ Rust commands.rs
 |------|------|
 | `resolve_cli(aip_root: &Path) -> Result<ResolvedCli, String>` | 依次尝试 `<root>/AI-Image-Process-CLI.exe`、`<root>/AI-Image-Process-CLI`、`<root>/dist/AI-Image-Process-CLI.exe`；再尝试 `<root>/.venv/Scripts/python.exe`（或 `bin/python`）且存在 `app/main_cli.py` 时返回 `{ program, pre_args: ["-m","app","cli"], cwd: root }` |
 | `load_aip_config(aip_root: &Path) -> Result<serde_json::Value, String>` | 优先 `<root>/config/config.json`，否则 `%APPDATA%/AI-Image-Process/config.json`（用 `std::env::var("APPDATA")`），读为 `Value` |
-| `resolve_task_input_dir(task_id) -> Result<PathBuf, String>` | `SELECT t.name, p.root_path FROM tasks t JOIN projects p ON p.id=t.project_id WHERE t.id=?`；`task_output_dir(&PathBuf::from(root_path).join("output"), &name)`；目录不存在则报错「该任务尚无输出目录」；可顺带统计轮次数供日志 |
-| `build_run_config(aip_cfg: &Value, output_dir: &Path) -> Result<(String /*json*/, String /*output*/), String>` | 深拷贝 AIP 配置，强制覆盖下表字段，写 `config_version: 2` |
+| `task_input_dir(task_id) -> Result<PathBuf, String>` | `SELECT t.name, t.output_folder, p.root_path ...`；优先用 `tasks.output_folder`，旧数据回落清洗后的任务名；目录不存在则报错「该任务尚无输出目录」 |
+| `apply_run_overrides` / `build_run_config` | 深拷贝 AIP 配置，强制覆盖下表字段，写 `config_version: 2`；删除原件由命令行开关控制，不写进配置 |
+| `read_delete_source_setting` / `detect_delete_support` | 读 `live_photo_delete_source`（默认开）；探测 AIP `--version`，`>=0.10` 才传 `--delete-originals`，旧版回退 `--no-delete-originals` 并提示 |
+| `cleanup_task_records(task_id, input_dir, deleted)` | 仅在 `deleted>0` 且目录不存在时，刷新账号统计后事务删三张表；否则保留记录并回显原因 |
 | `spawn_and_wait(cli, input_dir, output_dir, cfg_path, app) -> Result<Summary, String>` | `std::process::Command` + `CREATE_NO_WINDOW` + `Stdio::piped()`；设置 `PYTHONIOENCODING=utf-8`；逐行读 stderr 发事件；读完整 stdout 后按 UTF-8 解析 JSON；返回摘要与退出码 |
 | `verify_path_safety(input_dir, output_dir) -> Result<(), String>` | 输出目录若在输入目录内（或相等）直接拒绝，错误信息引用 AIP 的预检规则 |
 
@@ -107,8 +110,8 @@ Rust commands.rs
 {
   "config_version": 2,
   "input": {
-    "recurse_folders": true,             // 一次覆盖所有轮次
-    "delete_originals_after_run": false  // 安全：绝不删本项目图片
+    "recurse_folders": true              // 一次覆盖所有轮次
+    // 不再写 delete_originals_after_run：由 --delete-originals / --no-delete-originals 显式控制
   },
   "output": {
     "use_source_directory": false        // 安全：不往输入目录写
@@ -119,6 +122,8 @@ Rust commands.rs
 }
 ```
 
+> 命令行参数形态：`CLI <任务文件夹> -o <AIP默认目录> --config <临时配置> --enable-live-photo --video-source local_motion --delete-originals（或 --no-delete-originals） --json-summary`。摘要 JSON 新增 `originals_deleted` / `originals_failed`。
+>
 > `steps.hidden_image` 等其他步骤**不覆盖**，沿用用户在 AIP 中的配置；若隐藏图素材不足等原因导致预检失败，直接把 AIP 的 `preflight_error` 报给用户，不静默降级。
 
 - 临时配置写到本软件数据目录（复用 `app_data_dir()`），文件名带 `job_id` 或时间戳，避免并发冲突；`finally` 删除。
@@ -216,7 +221,7 @@ export async function livePhotoGenerate(task_id: number): Promise<string> {
 3. 任务文件夹不存在（还没生成过任何轮次）→ 报错「该任务尚无输出目录」。
 4. AIP 默认输出目录为空 → 报错「请先在 AI Image Process 中设置默认输出目录」。
 5. 输出目录位于任务输入目录内 → 拒绝（AIP 会 `rc=2`，提前给出更易懂的提示）。
-6. 触发 AIP 的 `delete_originals_after_run` 风险 → 配置强制 `false`，从根源消除。
+6. 删除原件不可逆：设置页 `live_photo_delete_source` 默认开启并有明确警示；AIP 0.10+ 用 `--delete-originals` 显式开启，旧版自动 `--no-delete-originals` 并提示；只有 `originals_deleted>0` 且文件夹已不存在才清理 DB 记录，CLI 因安全规则跳过时保留任务记录并回显原因。
 7. 跨轮次内容相同的图片会被 AIP 去重合并成一张 → 属预期行为，在界面提示里说明。
 8. `--seed` 不保证字节级复现 → 不把校验和用于判断成功。
 9. CLI 进程随软件退出而残留 → v1 先接受；v2 可增加「关闭软件时终止子进程」的清理逻辑。
@@ -235,7 +240,7 @@ export async function livePhotoGenerate(task_id: number): Promise<string> {
    - 在开发环境准备一个含 ≥2 轮的任务（复用现有 output 目录结构即可）。
    - 设置页填入 `C:\Users\jerry\Documents\ai-image-process`（源码目录）或发行包解压目录。
    - 点击「生成实况图片」：日志区出现进度，结束后提示成功 N 张。
-   - 到 AIP 配置的默认输出目录确认存在 `*.JPG + *.MOV` 配对；本项目 `output/` 下**不产生**任何实况文件；原图未被删除或修改。
+   - 到 AIP 配置的默认输出目录确认存在 `*.JPG + *.MOV` 配对；本项目 `output/` 下**不产生**任何实况文件。开启删除时任务文件夹被 AIP 整目录永久删除，软件确认 `originals_deleted>0` 且目录不存在后清理 DB 记录；关闭删除时原图与任务记录均保留。
    - 负向用例：清空 AIP 输出目录设置、把输出目录指到任务目录内、AIP 隐藏图素材不足（沿用用户配置，不强制关闭），均应得到明确错误且零产出。
 
 ---
@@ -246,7 +251,7 @@ export async function livePhotoGenerate(task_id: number): Promise<string> {
 
 | 验证项 | 命令/条件 | 结果 |
 |--------|-----------|------|
-| CLI 可用 | `-m app cli --version` / `--list-steps` | `ai-image-process 0.9.2`；步骤顺序符合文档 |
+| CLI 可用 | `-m app cli --version` / `--list-steps` | 调研时 `ai-image-process 0.9.2`；本次接线核实仓库已到 `0.10.1`（提交 `940f28d`），新增 `--delete-originals` 与安全删除模块 |
 | 目录输入 + 非图片文件 | `aip-probe/` 放 3 张 PNG + `prompt.txt` + `references.json`，配置关闭隐藏图后验证目录扫描行为 | `--dry-run`：`planned_input_count=3`，`preflight_failed=false`，`rc=0` |
 | 本地动态实况实跑 | 同上，`--enable-live-photo --video-source local_motion --json-summary` | `rc=0`，`success=3`，产出 `001.JPG+001.MOV`、`002...`、`003...`；`result.json` 的 `outputs` 列出 source→output |
 | 递归子目录 | `aip-recurse/round1/`、`round2/` 各放图，`input.recurse_folders=true` | 输出目录在输入目录**之外**时 `rc=0`、`planned_input_count=2`（另 2 张因内容相同被去重）；输出目录在输入目录**之内**时 `rc=2`，错误明确提示「输出目录位于递归扫描的输入文件夹之内」 |
