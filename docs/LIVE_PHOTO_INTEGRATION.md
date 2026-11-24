@@ -101,7 +101,7 @@ Rust commands.rs
 | `apply_run_overrides` / `build_run_config` | 深拷贝 AIP 配置，强制覆盖下表字段，写 `config_version: 2`；删除原件由命令行开关控制，不写进配置 |
 | `read_delete_source_setting` / `detect_delete_support` | 读 `live_photo_delete_source`（默认开）；探测 AIP `--version`，`>=0.10` 才传 `--delete-originals`，旧版回退 `--no-delete-originals` 并提示 |
 | `cleanup_task_records(task_id, input_dir, deleted)` | 仅在 `deleted>0` 且目录不存在时，刷新账号统计后事务删三张表；否则保留记录并回显原因 |
-| `spawn_and_wait(cli, input_dir, output_dir, cfg_path, app) -> Result<Summary, String>` | `std::process::Command` + `CREATE_NO_WINDOW` + `Stdio::piped()`；设置 `PYTHONIOENCODING=utf-8`；逐行读 stderr 发事件；读完整 stdout 后按 UTF-8 解析 JSON；返回摘要与退出码 |
+| `spawn_and_wait(cli, input_dir, output_dir, cfg_path, app) -> Result<Summary, String>` | `std::process::Command` + `CREATE_NO_WINDOW` + `Stdio::piped()`；设置 `PYTHONIOENCODING=utf-8`；逐行读 stderr 发事件；读完整 stdout 后解析 JSON；返回摘要与退出码。**stdout/stderr 均按字节读取后经 `decode_cli_output()` 解码（UTF-8 优先 → GB18030 → 有损兜底）**：中文 Windows 下 CLI 的 `--json-summary` 即使设了 UTF-8 环境变量仍可能输出 GBK 字节，直接 `read_to_string` 会误报 `stream did not contain valid UTF-8`，但产物其实已生成（v1.7.1 修复） |
 | `verify_path_safety(input_dir, output_dir) -> Result<(), String>` | 输出目录若在输入目录内（或相等）直接拒绝，错误信息引用 AIP 的预检规则 |
 
 **必须强制覆盖的配置**（写进临时 JSON，合并进用户 AIP 配置）：

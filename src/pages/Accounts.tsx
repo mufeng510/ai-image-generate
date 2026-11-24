@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event'
 import { accountList, accountAdd, accountDelete, accountOpenLogin, accountReorder, accountThresholdSet, type Account } from '@/hooks/api'
 import { useI18n } from '@/i18n'
 import { formatDateTime } from '@/utils/datetime'
+import { askConfirm, notify } from '@/utils/dialog'
 
 const smallBtn: React.CSSProperties = {
   background: '#f3f4f6',
@@ -57,7 +58,7 @@ export default function AccountsPage() {
       const data = await accountList()
       setAccounts(data)
     } catch (e) {
-      alert(t('accounts.loadFailed') + e)
+      notify(t('accounts.loadFailed') + e)
     } finally {
       setLoading(false)
     }
@@ -66,7 +67,7 @@ export default function AccountsPage() {
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
     if (!name.trim()) {
-      alert(t('accounts.nameEmpty'))
+      notify(t('accounts.nameEmpty'))
       return
     }
     setLoading(true)
@@ -75,7 +76,7 @@ export default function AccountsPage() {
       setAccounts([...accounts, a])
       setName('')
     } catch (e) {
-      alert(t('accounts.createFailed') + e)
+      notify(t('accounts.createFailed') + e)
     } finally {
       setLoading(false)
     }
@@ -86,17 +87,17 @@ export default function AccountsPage() {
       await accountOpenLogin(id)
       await load()
     } catch (e) {
-      alert(t('accounts.loginFailed') + e)
+      notify(t('accounts.loginFailed') + e)
     }
   }
 
   async function handleDelete(id: number) {
-    if (!window.confirm(t('accounts.deleteConfirm'))) return
+    if (!(await askConfirm(t('accounts.deleteConfirm')))) return
     try {
       await accountDelete(id)
       setAccounts(accounts.filter((a) => a.id !== id))
     } catch (e) {
-      alert(t('accounts.deleteFailed') + e)
+      notify(t('accounts.deleteFailed') + e)
     }
   }
 
@@ -109,7 +110,7 @@ export default function AccountsPage() {
       await accountThresholdSet(account.id!, value)
       setAccounts(accounts.map((a) => (a.id === account.id ? { ...a, image_threshold: value } : a)))
     } catch (e2) {
-      alert(t('accounts.thresholdFailed') + e2)
+      notify(t('accounts.thresholdFailed') + e2)
     }
   }
 
@@ -130,7 +131,7 @@ export default function AccountsPage() {
     setAccounts(reordered)
     setDraggingId(null)
     accountReorder(reordered.map((a) => a.id!)).catch((e) => {
-      alert(t('accounts.orderFailed') + e)
+      notify(t('accounts.orderFailed') + e)
       load()
     })
   }

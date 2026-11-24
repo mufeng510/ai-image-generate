@@ -331,6 +331,25 @@ fn read_delete_source_setting() -> bool {
         .unwrap_or(true)
 }
 
+/**
+ * 解码 AI Image Process 子进程的字节输出。
+ *
+ * 中文 Windows 下 CLI 即使设置了 PYTHONIOENCODING/PYTHONUTF8，`--json-summary`
+ * 的 stdout 仍可能是 GBK 字节；直接 read_to_string 会报
+ * "stream did not contain valid UTF-8"，但产物其实已经生成成功。
+ * 策略：UTF-8 优先 → GB18030（GBK 超集）→ 有损兜底，保证不误报失败。
+ */
+fn decode_cli_output(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_string();
+    }
+    let (decoded, _, had_errors) = encoding_rs::GB18030.decode(bytes);
+    if !had_errors {
+        return decoded.into_owned();
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
 /// AIP 0.10+ 才支持 --delete-originals；旧版回退为保留原件，不传未知参数。
 fn detect_delete_support(cli: &ResolvedCli) -> bool {
     let mut cmd = Command::new(&cli.program);
@@ -350,7 +369,7 @@ fn detect_delete_support(cli: &ResolvedCli) -> bool {
         Ok(o) => o,
         Err(_) => return false,
     };
-    version_supports_delete(&String::from_utf8_lossy(&output.stdout))
+    version_supports_delete(&decode_cli_output(&output.stdout))
 }
 
 /// 从 `--version` 输出里判断是否为 AIP >= 0.10（0.9.x 不支持删除开关）
@@ -471,8 +490,16 @@ pub fn execute(app: &AppHandle, prepared: Prepared) -> LivePhotoFinished {
     let stderr = child.stderr.take();
     let stderr_handle = std::thread::spawn(move || {
         if let Some(stderr) = stderr {
-            for line in BufReader::new(stderr).lines() {
-                let line = line.unwrap_or_else(|_| "<无法解码的日志>".to_string());
+            let mut reader = BufReader::new(stderr);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                let n = reader.read_until(b'\n', &mut buf).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                // 按字节行解码，中文 GBK 日志不再变成 U+FFFD
+                let line = decode_cli_output(&buf).trim_end_matches(|c| c == '\r' || c == '\n').to_string();
                 if !line.trim().is_empty() {
                     let _ = stderr_app.emit(
                         "live-photo-progress",
@@ -492,14 +519,14 @@ pub fn execute(app: &AppHandle, prepared: Prepared) -> LivePhotoFinished {
         }
     });
 
-    let mut stdout_text = String::new();
+    let mut stdout_bytes = Vec::new();
     let stdout_result = child
         .stdout
         .take()
         .ok_or_else(|| "无法读取 AI Image Process 的 stdout".to_string())
         .and_then(|mut stdout| {
             stdout
-                .read_to_string(&mut stdout_text)
+                .read_to_end(&mut stdout_bytes)
                 .map_err(|e| format!("读取 AI Image Process 输出失败：{}", e))
         });
     let status = child.wait().map_err(|e| e.to_string());
@@ -514,6 +541,7 @@ pub fn execute(app: &AppHandle, prepared: Prepared) -> LivePhotoFinished {
         Err(e) => return failure(&job_id, task_id, &output_dir, format!("等待 AI Image Process 结束失败：{}", e)),
     };
 
+    let stdout_text = decode_cli_output(&stdout_bytes);
     let trimmed = stdout_text.trim();
     let summary: Value = match serde_json::from_str(trimmed) {
         Ok(v) => v,
@@ -663,6 +691,15 @@ mod tests {
         assert!(version_supports_delete("ai-image-process 1.2.0"));
         assert!(!version_supports_delete("ai-image-process 0.9.2"));
         assert!(!version_supports_delete(""));
+    }
+
+    #[test]
+    fn decode_cli_output_handles_gbk_chinese_path() {
+        let original = "C:/Users/jerry/Pictures/处理完成";
+        let (gbk, _, _) = encoding_rs::GBK.encode(original);
+        assert!(std::str::from_utf8(&gbk).is_err(), "测试字节应为非 UTF-8");
+        assert_eq!(decode_cli_output(&gbk), original);
+        assert_eq!(decode_cli_output(b"{\"success\":3}"), "{\"success\":3}");
     }
 
     #[test]

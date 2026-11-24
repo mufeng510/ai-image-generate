@@ -18,6 +18,7 @@ import {
   type LivePhotoFinished,
 } from '@/hooks/api'
 import { useI18n } from '@/i18n'
+import { askConfirm, notify } from '@/utils/dialog'
 
 export default function RoundDetail({ selection, onBack }: { selection: FolderSelection; onBack?: () => void }) {
   const { t } = useI18n()
@@ -102,14 +103,14 @@ export default function RoundDetail({ selection, onBack }: { selection: FolderSe
   }
 
   const handleDeleteImage = async (fileName: string) => {
-    if (!window.confirm(t('roundDetail.deleteImageConfirm'))) return
+    if (!(await askConfirm(t('roundDetail.deleteImageConfirm')))) return
     if (!selectedRoundDir) return
     setDeletingFile(fileName)
     try {
       await taskFolderDeleteImage(selection.projectId, selection.folder, selectedRoundDir, fileName)
       await loadDetail()
     } catch (e) {
-      alert(t('roundDetail.deleteImageFailed') + e)
+      notify(t('roundDetail.deleteImageFailed') + e)
     } finally {
       setDeletingFile(null)
     }
@@ -119,7 +120,7 @@ export default function RoundDetail({ selection, onBack }: { selection: FolderSe
     try {
       await taskFolderOpen(selection.projectId, selection.folder, roundDir)
     } catch (e) {
-      alert(t('roundDetail.openFolderFailed') + e)
+      notify(t('roundDetail.openFolderFailed') + e)
     }
   }
 

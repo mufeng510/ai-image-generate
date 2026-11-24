@@ -1,5 +1,6 @@
 use chrono::{Local, Utc};
 use serde::Deserialize;
+use std::path::Component;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
@@ -1376,6 +1377,20 @@ mod project_tests {
     }
 
     #[test]
+    fn resolve_output_path_keeps_lexical_layout_and_rejects_traversal() {
+        let base = std::env::temp_dir().join(format!("aig-output-test-{}", std::process::id()));
+        let task = base.join("task-a");
+        std::fs::create_dir_all(&task).unwrap();
+        assert_eq!(
+            resolve_output_path(&base, std::path::Path::new("task-a")).unwrap(),
+            task
+        );
+        assert!(resolve_output_path(&base, std::path::Path::new("..\\outside")).is_err());
+        assert!(resolve_output_path(&base, std::path::Path::new("C:\\Windows")).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn ensure_within_rejects_paths_outside_references() {
         let dir = temp_project_dir("within");
         let base = canonical_references(&dir).unwrap();
@@ -1837,7 +1852,7 @@ pub async fn task_folder_detail(project_id: i64, folder: String) -> Result<TaskF
         return Err("该项目尚无输出目录".to_string());
     }
     let base = base.canonicalize().map_err(|e| e.to_string())?;
-    let dir = ensure_within(&base, &base.join(&folder))?;
+    let dir = resolve_output_path(&base, std::path::Path::new(&folder))?;
     let meta = read_task_meta(&dir).ok_or_else(|| "任务清单缺失：task.meta.json".to_string())?;
     let mut rounds = Vec::new();
     for sub in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
@@ -2001,16 +2016,32 @@ pub async fn cleanup_stale_task_records() -> Result<i64, String> {
     Ok(removed)
 }
 
-/** 解析 base 内已存在的路径（含 junction 逃逸检查）；返回去掉 Windows 前缀的路径 */
+/**
+ * 解析 output 下已存在的路径，返回去掉 Windows `\\?\` 前缀的路径。
+ *
+ * 这里刻意保留 output 内软链接 / junction 的原始目录结构：用户可能把任务文件夹
+ * 通过软链接挂载到项目之外，canonicalize 后再 starts_with 会把它们误判为逃逸。
+ * 安全边界改为词法校验——拒绝绝对路径、盘符前缀与 `..` 逃逸；结果必须仍在 base 内。
+ */
 fn resolve_output_path(base: &std::path::Path, rel: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    let joined = base.join(rel);
-    let canonical = joined
-        .canonicalize()
-        .map_err(|e| format!("路径不存在：{}（{}）", joined.display(), e))?;
-    if !canonical.starts_with(base) {
-        return Err("路径不在项目输出目录内，拒绝访问".to_string());
+    let deny = || "路径不在项目输出目录内，拒绝访问".to_string();
+    if rel.is_absolute() {
+        return Err(deny());
     }
-    Ok(display_path_buf(canonical))
+    for component in rel.components() {
+        match component {
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return Err(deny()),
+            Component::CurDir | Component::Normal(_) => {}
+        }
+    }
+    let joined = base.join(rel);
+    if !joined.starts_with(base) {
+        return Err(deny());
+    }
+    if !joined.exists() {
+        return Err(format!("路径不存在：{}（软链接目标可能已失效）", joined.display()));
+    }
+    Ok(display_path_buf(joined))
 }
 
 #[tauri::command(rename_all = "snake_case")]

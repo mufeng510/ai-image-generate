@@ -3,6 +3,7 @@ import { useI18n } from '@/i18n'
 import { logsQuery, logsExport, accountList, type Account, type LogEntry, type LogFilter } from '@/hooks/api'
 import { formatDateTime } from '@/utils/datetime'
 import { save } from '@tauri-apps/plugin-dialog'
+import { notify } from '@/utils/dialog'
 
 const LEVELS = ['info', 'warn', 'error', 'debug']
 
@@ -33,7 +34,7 @@ export default function LogsPage() {
     if (trimmedId) {
       const n = Number(trimmedId)
       if (!Number.isInteger(n) || n <= 0) {
-        alert(t('logs.needPositiveInt'))
+        notify(t('logs.needPositiveInt'))
         return null
       }
       filter.task_id = n
@@ -54,7 +55,7 @@ export default function LogsPage() {
       setLogs(data)
     } catch (e) {
       console.error(t('logs.loadFailed'), e)
-      alert(t('logs.loadFailed') + e)
+      notify(t('logs.loadFailed') + e)
     } finally {
       setLoading(false)
     }
@@ -81,9 +82,9 @@ export default function LogsPage() {
       })
       if (!path) return
       const count = await logsExport(filter, path)
-      alert(t('logs.exportSuccess', { count, path }))
+      notify(t('logs.exportSuccess', { count, path }))
     } catch (e) {
-      alert(t('logs.exportFailed') + e)
+      notify(t('logs.exportFailed') + e)
     } finally {
       setExporting(false)
     }

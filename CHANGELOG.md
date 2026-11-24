@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [v1.7.1] - 2026-11-25
+
+### 修复
+
+- **二次确认不再“未确认就执行”**：Tauri/WebView2 下 `window.confirm` / `window.alert` / `window.prompt` 不阻塞，会立即返回并让后续操作抢先执行，导致确认框与报错框同时弹出。全部改为 `@tauri-apps/plugin-dialog` 的异步 `ask` / `message`；文本输入改为应用内弹窗（Enter 提交、Esc 取消）。
+- **设置页保存按钮冗余**：设置项改为实时保存（输入失焦或选择变更即写入），去掉各配置项旁及页面底部的重复保存按钮，仅在标题旁显示“已保存”。
+- **软链接任务文件夹**：`output/` 下通过软链接 / junction 挂载的任务文件夹不再被误判为“路径不在项目输出目录内”；打开目录、查看详情、删除图片均可正常使用。安全边界改为词法校验，仍拒绝绝对路径与 `..` 逃逸。
+- **中文路径导致实况生成误报失败**：AI Image Process 在中文 Windows 下 `--json-summary` 的 stdout 可能是 GBK 字节，原先按 UTF-8 读取会报 `stream did not contain valid UTF-8`，但产物其实已生成。改为 UTF-8 优先、GB18030 兜底解码，stderr 进度日志同样按字节解码。
+
+### 验证
+
+- `cargo test` 66/66、`npx tsc --noEmit`、`npm run build` 全绿；新增 GBK 解码与路径词法校验单测。
+
 ## [v1.7.0] - 2026-11-25
 
 ### 新增 / 重构

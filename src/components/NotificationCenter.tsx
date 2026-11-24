@@ -12,6 +12,7 @@ import {
 } from '@/hooks/api'
 import { useI18n } from '@/i18n'
 import { formatDateTime } from '@/utils/datetime'
+import { notify } from '@/utils/dialog'
 
 const LEVEL_DOT: Record<string, string> = {
   info: '#2563eb',
@@ -68,7 +69,7 @@ export default function NotificationCenter({ onOpenTask }: Props) {
     const unlisteners: Array<() => void> = []
     let cancelled = false
 
-    async function notify(n: {
+    async function emitNotification(n: {
       kind: string
       title: string
       message: string
@@ -109,7 +110,7 @@ export default function NotificationCenter({ onOpenTask }: Props) {
     const subs = [
       listen('task-started', (e) => {
         const payload = p(e)
-        notify({
+        emitNotification({
           kind: 'task_started',
           title: t('notify.taskStarted'),
           message: t('notify.taskStartedMessage', { id: payload.task_id }),
@@ -119,7 +120,7 @@ export default function NotificationCenter({ onOpenTask }: Props) {
       }),
       listen('task-completed', (e) => {
         const payload = p(e)
-        notify({
+        emitNotification({
           kind: 'task_completed',
           title: t('notify.taskCompleted'),
           message: t('notify.taskCompletedMessage', { id: payload.task_id }),
@@ -133,7 +134,7 @@ export default function NotificationCenter({ onOpenTask }: Props) {
         const reason = (payload.reason as string | undefined) ?? ''
         const withReason = (msg: string) => (reason ? `${msg}。原因：${reason}` : msg)
         if (status === 'failed') {
-          notify({
+          emitNotification({
             kind: 'task_failed',
             title: t('notify.taskFailed'),
             message: withReason(t('notify.taskFailedMessage', { id: payload.task_id })),
@@ -141,7 +142,7 @@ export default function NotificationCenter({ onOpenTask }: Props) {
             task_id: payload.task_id,
           })
         } else if (status === 'needs_manual_intervention') {
-          notify({
+          emitNotification({
             kind: 'needs_manual_intervention',
             title: t('notify.needsIntervention'),
             message: withReason(t('notify.needsInterventionMessage', { id: payload.task_id })),
@@ -152,7 +153,7 @@ export default function NotificationCenter({ onOpenTask }: Props) {
       }),
       listen('retry-exhausted', (e) => {
         const payload = p(e)
-        notify({
+        emitNotification({
           kind: 'retry_exhausted',
           title: t('notify.retryExhausted'),
           message: t('notify.retryExhaustedMessage', { stage: payload.stage ?? 'unknown' }),
@@ -162,7 +163,7 @@ export default function NotificationCenter({ onOpenTask }: Props) {
       }),
       listen('account-threshold-reached', (e) => {
         const payload = p(e)
-        notify({
+        emitNotification({
           kind: 'account_threshold_reached',
           title: t('notify.thresholdReached'),
           message: t('notify.thresholdMessage', { id: payload.account_id }),
@@ -191,7 +192,7 @@ export default function NotificationCenter({ onOpenTask }: Props) {
       await notificationClear()
       setItems([])
     } catch (e) {
-      alert(t('msg.clearNotifyFailed') + e)
+      notify(t('msg.clearNotifyFailed') + e)
     }
   }
 
@@ -200,7 +201,7 @@ export default function NotificationCenter({ onOpenTask }: Props) {
       await notificationMarkAllRead()
       setItems((prev) => prev.map((i) => ({ ...i, read: true })))
     } catch (e) {
-      alert(t('msg.markAllReadFailed') + e)
+      notify(t('msg.markAllReadFailed') + e)
     }
   }
 

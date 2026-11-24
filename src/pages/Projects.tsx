@@ -37,6 +37,7 @@ import {
   type GenParams,
 } from '@/hooks/api'
 import { useI18n } from '@/i18n'
+import { askConfirm, notify } from '@/utils/dialog'
 import { useTaskStatusLabels } from '@/utils/taskStatus'
 import { formatDateTime } from '@/utils/datetime'
 
@@ -123,6 +124,30 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
   const [detail, setDetail] = useState<ReferenceDetail | null>(null)
 
   const [genParamsEditor, setGenParamsEditor] = useState<{ id: number; name: string; model: string; ratio: string; style: string; expected: string } | null>(null)
+  const [promptRequest, setPromptRequest] = useState<{ message: string; value: string; resolve: (v: string | null) => void } | null>(null)
+
+  useEffect(() => {
+    if (!promptRequest) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        promptRequest.resolve(null)
+        setPromptRequest(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [promptRequest])
+
+  function askText(message: string, defaultValue = ''): Promise<string | null> {
+    return new Promise((resolve) => setPromptRequest({ message, value: defaultValue, resolve }))
+  }
+
+  function finishPrompt(value: string | null) {
+    if (!promptRequest) return
+    promptRequest.resolve(value)
+    setPromptRequest(null)
+  }
 
   useEffect(() => {
     load()
@@ -134,7 +159,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
       const data = await projectList()
       setProjects(data)
     } catch (e) {
-      alert(t('projects.loadFailed') + e)
+      notify(t('projects.loadFailed') + e)
     } finally {
       setLoading(false)
     }
@@ -150,7 +175,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
       setProjects([p, ...projects])
       setName('')
     } catch (e) {
-      alert(t('projects.createFailed') + e)
+      notify(t('projects.createFailed') + e)
     } finally {
       setLoading(false)
     }
@@ -164,7 +189,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
     try {
       setImportCandidates(await projectImportCandidates())
     } catch (e) {
-      alert(t('projects.importCandidatesFailed') + e)
+      notify(t('projects.importCandidatesFailed') + e)
       setImportOpen(false)
     } finally {
       setImportLoading(false)
@@ -178,35 +203,35 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
       setProjects([p, ...projects])
       setImportCandidates((prev) => prev.filter((x) => x.path !== c.path))
     } catch (e) {
-      alert(t('projects.importFailed') + e)
+      notify(t('projects.importFailed') + e)
     } finally {
       setImportingPath(null)
     }
   }
 
   async function handleDelete(id: number) {
-    if (!window.confirm(t('projects.deleteConfirm'))) return
+    if (!(await askConfirm(t('projects.deleteConfirm')))) return
     try {
       await projectDelete(id)
       setProjects(projects.filter((p) => p.id !== id))
       if (expandedId === id) setExpandedId(null)
     } catch (e) {
-      alert(t('projects.deleteFailed') + e)
+      notify(t('projects.deleteFailed') + e)
     }
   }
 
   async function handleRename(p: Project) {
-    const next = window.prompt(t('projects.renamePrompt'), p.name)
+    const next = await askText(t('projects.renamePrompt'), p.name)
     if (next === null) return
     if (!next.trim()) {
-      alert(t('projects.renameEmpty'))
+      notify(t('projects.renameEmpty'))
       return
     }
     try {
       const updated = await projectRename(p.id!, next.trim())
       setProjects(projects.map((x) => (x.id === p.id ? updated : x)))
     } catch (e) {
-      alert(t('projects.renameFailed') + e)
+      notify(t('projects.renameFailed') + e)
     }
   }
 
@@ -214,7 +239,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
     try {
       await projectOpenFolder(p.id!)
     } catch (e) {
-      alert(t('projects.openFolderFailed') + e)
+      notify(t('projects.openFolderFailed') + e)
     }
   }
 
@@ -228,7 +253,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
       setStats((prev) => ({ ...prev, [id]: statsData }))
       setRefItems((prev) => ({ ...prev, [id]: itemsData }))
     } catch (e) {
-      alert(t('msg.readRefsFailed') + e)
+      notify(t('msg.readRefsFailed') + e)
     } finally {
       setRefLoading((prev) => ({ ...prev, [id]: false }))
     }
@@ -252,44 +277,44 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
     })
     if (!selected) return
     const paths = Array.isArray(selected) ? selected : [selected]
-    const subfolderRaw = window.prompt(t('msg.subfolderPrompt'), '')
+    const subfolderRaw = await askText(t('msg.subfolderPrompt'), '')
     if (subfolderRaw === null) return
     const subfolder = subfolderRaw.trim() || null
     try {
       const result = await projectRefAdd(p.id!, paths, subfolder)
       await refreshReferenceData(p.id!)
       if (result.added === 0) {
-        alert(t('msg.noneAdded', { list: result.skipped.length ? `\n${result.skipped.join('\n')}` : '' }))
+        notify(t('msg.noneAdded', { list: result.skipped.length ? `\n${result.skipped.join('\n')}` : '' }))
       } else if (result.skipped.length) {
-        alert(t('msg.added', { n: result.added, list: result.skipped.join('\n') }))
+        notify(t('msg.added', { n: result.added, list: result.skipped.join('\n') }))
       }
     } catch (e) {
-      alert(t('msg.addFailed') + e)
+      notify(t('msg.addFailed') + e)
     }
   }
 
   async function handleCreateSubfolder(p: Project) {
-    const rel = window.prompt(t('msg.newSubfolderPrompt'), '')
+    const rel = await askText(t('msg.newSubfolderPrompt'), '')
     if (rel === null) return
     if (!rel.trim()) {
-      alert(t('msg.newSubfolderEmpty'))
+      notify(t('msg.newSubfolderEmpty'))
       return
     }
     try {
       await projectRefCreateFolder(p.id!, rel.trim())
       await refreshReferenceData(p.id!)
     } catch (e) {
-      alert(t('msg.createSubfolderFailed') + e)
+      notify(t('msg.createSubfolderFailed') + e)
     }
   }
 
   async function handleDeleteRef(p: Project, item: ReferenceItem) {
-    if (!window.confirm(t('msg.refDeleteConfirm', { name: item.name }))) return
+    if (!(await askConfirm(t('msg.refDeleteConfirm', { name: item.name })))) return
     try {
       await projectRefDelete(p.id!, item.path)
       await refreshReferenceData(p.id!)
     } catch (e) {
-      alert(t('msg.refDeleteFailed') + e)
+      notify(t('msg.refDeleteFailed') + e)
     }
   }
 
@@ -298,7 +323,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
       const data = await projectRefDetail(p.id!, item.path)
       setDetail(data)
     } catch (e) {
-      alert(t('msg.detailFailed') + e)
+      notify(t('msg.detailFailed') + e)
     }
   }
 
@@ -306,7 +331,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
     try {
       await projectRefReveal(p.id!, item.path)
     } catch (e) {
-      alert(t('msg.revealFailed') + e)
+      notify(t('msg.revealFailed') + e)
     }
   }
 
@@ -314,7 +339,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
     try {
       await projectRefOpen(p.id!, item.path)
     } catch (e) {
-      alert(t('msg.openFailed') + e)
+      notify(t('msg.openFailed') + e)
     }
   }
 
@@ -330,7 +355,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
       }
       setGenParamsEditor({ id: p.id!, name: p.name, model: g.model ?? '', ratio: g.ratio ?? '', style: g.style ?? '', expected })
     } catch (e) {
-      alert(t('projects.paramsFailed') + e)
+      notify(t('projects.paramsFailed') + e)
     }
   }
 
@@ -341,7 +366,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
     if (expectedTrim !== '') {
       const n = Number(expectedTrim)
       if (!Number.isInteger(n) || n < 1 || n > 20) {
-        alert(t('projects.expectedImagesInvalid'))
+        notify(t('projects.expectedImagesInvalid'))
         return
       }
       expectedValue = n
@@ -353,10 +378,10 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
         style: genParamsEditor.style.trim() || null,
       })
       await projectExpectedImagesSet(genParamsEditor.id, expectedValue)
-      alert(t('settings.saveSuccess'))
+      notify(t('settings.saveSuccess'))
       setGenParamsEditor(null)
     } catch (e) {
-      alert(t('projects.paramsSaveFailed') + e)
+      notify(t('projects.paramsSaveFailed') + e)
     }
   }
 
@@ -366,7 +391,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
       setPromptText(text)
       setPromptEditor({ id: p.id!, name: p.name })
     } catch (e) {
-      alert(t('projects.loadPromptFailed') + e)
+      notify(t('projects.loadPromptFailed') + e)
     }
   }
 
@@ -375,10 +400,10 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
     setPromptSaving(true)
     try {
       await projectPromptSet(promptEditor.id, promptText)
-      alert(t('projects.promptSaved'))
+      notify(t('projects.promptSaved'))
       setPromptEditor(null)
     } catch (e) {
-      alert(t('projects.savePromptFailed') + e)
+      notify(t('projects.savePromptFailed') + e)
     } finally {
       setPromptSaving(false)
     }
@@ -392,7 +417,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
       const items = await projectTaskHistory(p.id!, 20)
       setHistoryItems(items)
     } catch (e) {
-      alert(t('projects.historyFailed') + e)
+      notify(t('projects.historyFailed') + e)
     } finally {
       setHistoryLoading(false)
     }
@@ -471,11 +496,11 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
                     </button>
                     <button
                       onClick={async () => {
-                        if (!window.confirm(t('projects.backfillConfirm'))) return
+                        if (!(await askConfirm(t('projects.backfillConfirm')))) return
                         try {
                           const n = await projectBackfillTaskMeta(id)
-                          alert(t('projects.backfillDone', { n }))
-                        } catch (e) { alert(t('projects.backfillFailed') + e) }
+                          notify(t('projects.backfillDone', { n }))
+                        } catch (e) { notify(t('projects.backfillFailed') + e) }
                       }}
                       style={actionStyle}
                       title={t('projects.backfillHint')}
@@ -801,6 +826,25 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
               <button onClick={() => setDetail(null)} style={{ ...actionStyle, marginRight: 0, padding: '8px 16px' }}>
                 {t('common.close')}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {promptRequest && (
+        <div style={modalOverlay} onClick={() => finishPrompt(null)}>
+          <div style={{ ...modalCard, width: 'min(520px, 94vw)' }} onClick={(e) => e.stopPropagation()}>
+            <p style={{ fontSize: '13px', color: '#374151', marginBottom: '12px' }}>{promptRequest.message}</p>
+            <input
+              autoFocus
+              value={promptRequest.value}
+              onChange={(e) => setPromptRequest({ ...promptRequest, value: e.target.value })}
+              onKeyDown={(e) => { if (e.key === 'Enter') finishPrompt(promptRequest.value) }}
+              style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '14px' }}>
+              <button onClick={() => finishPrompt(null)} style={{ ...actionStyle, marginRight: 0, padding: '8px 16px' }}>{t('common.cancel')}</button>
+              <button onClick={() => finishPrompt(promptRequest.value)} style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>{t('common.confirm')}</button>
             </div>
           </div>
         </div>

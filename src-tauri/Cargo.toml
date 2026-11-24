@@ -1,6 +1,6 @@
 [package]
 name = "doubao-batch-image-generate"
-version = "1.7.0"
+version = "1.7.1"
 edition = "2021"
 
 [dependencies]
@@ -16,6 +16,8 @@ tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
+# AI Image Process CLI 在中文 Windows 下 stdout 可能输出 GBK 字节，需按 GB18030 解码
+encoding_rs = "0.8"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -884,10 +884,11 @@ dependencies = [
 
 [[package]]
 name = "doubao-batch-image-generate"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
+ "encoding_rs",
  "rusqlite",
  "serde",
  "serde_json",

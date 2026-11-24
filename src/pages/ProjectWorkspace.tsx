@@ -34,6 +34,7 @@ import {
 } from '@/hooks/api'
 import { useI18n } from '@/i18n'
 import { formatDateTime } from '@/utils/datetime'
+import { notify } from '@/utils/dialog'
 
 type Tab = 'tasks' | 'refs' | 'settings'
 
@@ -105,7 +106,7 @@ export default function ProjectWorkspace({ projectId, projectName, onOpenTask, o
       setRounds('1')
       await loadFolders()
     } catch (err) {
-      alert(t('tasks.createFailed') + err)
+      notify(t('tasks.createFailed') + err)
     } finally {
       setCreating(false)
     }
@@ -113,7 +114,7 @@ export default function ProjectWorkspace({ projectId, projectName, onOpenTask, o
 
   async function savePrompt() {
     setSavingPrompt(true)
-    try { await projectPromptSet(projectId, prompt) } catch (e) { alert(t('btn.save') + e) } finally { setSavingPrompt(false) }
+    try { await projectPromptSet(projectId, prompt) } catch (e) { notify(t('btn.save') + e) } finally { setSavingPrompt(false) }
   }
 
   async function saveParams() {
@@ -122,7 +123,7 @@ export default function ProjectWorkspace({ projectId, projectName, onOpenTask, o
       const value = expected.trim() === '' ? null : Math.max(1, Math.min(999, Number(expected) || 1))
       await projectExpectedImagesSet(projectId, value)
     } catch (e) {
-      alert(t('btn.save') + e)
+      notify(t('btn.save') + e)
     }
   }
 
@@ -138,7 +139,7 @@ export default function ProjectWorkspace({ projectId, projectName, onOpenTask, o
           <h2 style={{ fontSize: '20px', fontWeight: '600', margin: 0 }}>{t('workspace.title')} · {projectName}</h2>
         </div>
         <div style={{ display: 'flex', gap: '6px' }}>
-          <button onClick={() => projectOpenFolder(projectId).catch((e) => alert(e))} style={btnStyle}>{t('btn.openFolder')}</button>
+          <button onClick={() => projectOpenFolder(projectId).catch((e) => notify(e))} style={btnStyle}>{t('btn.openFolder')}</button>
           <button onClick={onBack} style={btnStyle}>← {t('roundDetail.back')}</button>
         </div>
       </div>
@@ -203,7 +204,7 @@ export default function ProjectWorkspace({ projectId, projectName, onOpenTask, o
                     <td style={{ padding: '10px', fontSize: '13px', color: '#6b7280' }}>{folder.image_count}</td>
                     <td style={{ padding: '10px', fontSize: '12px', color: '#6b7280' }}>{folder.updated_at ? formatDateTime(folder.updated_at) : '-'}</td>
                     <td style={{ padding: '10px' }}>
-                      <button onClick={(e) => { e.stopPropagation(); taskFolderOpen(projectId, folder.folder).catch((err) => alert(err)) }} style={btnStyle}>
+                      <button onClick={(e) => { e.stopPropagation(); taskFolderOpen(projectId, folder.folder).catch((err) => notify(err)) }} style={btnStyle}>
                         {t('tasks.folderOpen')}
                       </button>
                     </td>
@@ -224,7 +225,7 @@ export default function ProjectWorkspace({ projectId, projectName, onOpenTask, o
             <div style={{ fontSize: '13px', color: '#6b7280' }}>
               {stats ? t('projects.chartBars', { n: stats.total_images, folders: stats.folder_count }) : '…'}
             </div>
-            <button onClick={() => projectOpenFolder(projectId).catch((e) => alert(e))} style={btnStyle}>{t('btn.openFolder')}</button>
+            <button onClick={() => projectOpenFolder(projectId).catch((e) => notify(e))} style={btnStyle}>{t('btn.openFolder')}</button>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '12px' }}>
             {refs.map((item) => (
@@ -234,7 +235,7 @@ export default function ProjectWorkspace({ projectId, projectName, onOpenTask, o
                 </div>
                 <div style={{ padding: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '4px' }}>
                   <span style={{ fontSize: '11px', color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.relative_path}>{item.name}</span>
-                  <button onClick={() => projectRefOpen(projectId, item.path).catch((e) => alert(e))} style={{ ...btnStyle, padding: '2px 6px', margin: 0, fontSize: '11px' }}>{t('btn.view')}</button>
+                  <button onClick={() => projectRefOpen(projectId, item.path).catch((e) => notify(e))} style={{ ...btnStyle, padding: '2px 6px', margin: 0, fontSize: '11px' }}>{t('btn.view')}</button>
                 </div>
               </div>
             ))}

@@ -28,6 +28,7 @@ import {
 import { listen } from '@tauri-apps/api/event'
 import { useTaskStatusLabels, useConfirmNodeLabels } from '@/utils/taskStatus'
 import { formatDateTime } from '@/utils/datetime'
+import { notify } from '@/utils/dialog'
 
 const FOLDER_STATUS_COLORS: Record<string, string> = {
   generating: '#2563eb',
@@ -128,7 +129,7 @@ export default function ExecutionPage({ onFolderSelect }: { onFolderSelect: (sel
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
     if (!projectId) {
-      alert(t('tasks.selectProject'))
+      notify(t('tasks.selectProject'))
       return
     }
     setLoading(true)
@@ -140,7 +141,7 @@ export default function ExecutionPage({ onFolderSelect }: { onFolderSelect: (sel
       setRounds('1')
       await loadFolders()
     } catch (err) {
-      alert(t('tasks.createFailed') + err)
+      notify(t('tasks.createFailed') + err)
     } finally {
       setLoading(false)
     }
@@ -151,7 +152,7 @@ export default function ExecutionPage({ onFolderSelect }: { onFolderSelect: (sel
       await taskStart(id)
       await loadFolders()
     } catch (e) {
-      alert(t('tasks.startFailed') + e)
+      notify(t('tasks.startFailed') + e)
     }
   }
 
@@ -160,7 +161,7 @@ export default function ExecutionPage({ onFolderSelect }: { onFolderSelect: (sel
       await fn(id)
       await loadFolders()
     } catch (e) {
-      alert(t('tasks.actionFailed') + e)
+      notify(t('tasks.actionFailed') + e)
     }
   }
 
@@ -286,7 +287,7 @@ export default function ExecutionPage({ onFolderSelect }: { onFolderSelect: (sel
                   <td style={{ padding: '10px', fontSize: '12px', color: '#6b7280' }}>{folder.updated_at ? formatDateTime(folder.updated_at) : '-'}</td>
                   <td style={{ padding: '10px' }}>
                     <button
-                      onClick={(e) => { e.stopPropagation(); taskFolderOpen(folder.project_id!, folder.folder).catch((err) => alert(err)) }}
+                      onClick={(e) => { e.stopPropagation(); taskFolderOpen(folder.project_id!, folder.folder).catch((err) => notify(err)) }}
                       style={{ background: '#f3f4f6', color: '#374151', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '4px' }}
                     >
                       {t('tasks.folderOpen')}

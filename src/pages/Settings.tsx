@@ -5,6 +5,7 @@ import { useI18n } from '@/i18n'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification'
 import { getVersion } from '@tauri-apps/api/app'
+import { askConfirm, notify } from '@/utils/dialog'
 
 export default function SettingsPage() {
   const { t, lang, setLang } = useI18n()
@@ -30,6 +31,7 @@ export default function SettingsPage() {
   const [aipRootDir, setAipRootDir] = useState('')
   const [deleteSourceAfterLivePhoto, setDeleteSourceAfterLivePhoto] = useState(true)
   const [probingLivePhoto, setProbingLivePhoto] = useState(false)
+  const [saved, setSaved] = useState(false)
 
   async function load() {
     const v = await settingsGet('project_root')
@@ -75,12 +77,12 @@ export default function SettingsPage() {
       const u = await check()
       setUpdate(u)
       if (u) {
-        alert(`${t('settings.newVersion', { version: u.version })}${u.body ? '\n\n' + u.body : ''}`)
+        notify(`${t('settings.newVersion', { version: u.version })}${u.body ? '\n\n' + u.body : ''}`)
       } else {
-        alert(t('settings.latestVersion'))
+        notify(t('settings.latestVersion'))
       }
     } catch (e) {
-      alert(t('settings.updateFailed') + String(e))
+      notify(t('settings.updateFailed') + String(e))
     } finally {
       setChecking(false)
     }
@@ -88,27 +90,29 @@ export default function SettingsPage() {
 
   async function downloadAndInstall() {
     if (!update) {
-      alert(t('settings.beforeCheck'))
+      notify(t('settings.beforeCheck'))
       return
     }
     setInstalling(true)
     try {
       await update.downloadAndInstall()
-      alert(t('settings.installDone'))
+      notify(t('settings.installDone'))
     } catch (e) {
-      alert(t('settings.downloadPromptFailed') + String(e))
+      notify(t('settings.downloadPromptFailed') + String(e))
     } finally {
       setInstalling(false)
     }
   }
 
-  async function saveKey(key: string, getVal: () => string, setVal: (v: string) => void) {
+  /** 实时保存单个设置项：成功只更新页面状态文字，失败才弹窗报错。 */
+  async function saveSetting(key: string, value: string, setVal?: (v: string) => void) {
     try {
-      await settingsSet(key, getVal())
-      setVal(getVal())
-      alert(t('settings.saveSuccess'))
+      await settingsSet(key, value)
+      setVal?.(value)
+      setSaved(true)
     } catch (e) {
-      alert(t('settings.saveFailed') + e)
+      setSaved(false)
+      notify(t('settings.saveFailed') + e)
     }
   }
 
@@ -117,47 +121,7 @@ export default function SettingsPage() {
       await settingsSet(key, value ? 'true' : 'false')
       setVal(value)
     } catch (e) {
-      alert(t('settings.saveFailed') + e)
-    }
-  }
-
-  async function saveExpectedImages() {
-    const trimmed = expectedImages.trim()
-    if (trimmed !== '') {
-      const n = Number(trimmed)
-      if (!Number.isInteger(n) || n < 1 || n > 20) {
-        alert(t('settings.expectedImagesInvalid'))
-        return
-      }
-    }
-    try {
-      await settingsSet('expected_images_per_round', trimmed)
-      setExpectedImages(trimmed)
-      alert(t('settings.saveSuccess'))
-    } catch (e) {
-      alert(t('settings.saveFailed') + e)
-    }
-  }
-
-  async function saveDefaultQuota() {
-    const n = Math.max(0, Math.min(100000, Math.floor(Number(defaultQuota) || 0)))
-    try {
-      await settingsSet('default_account_daily_quota', String(n))
-      setDefaultQuota(String(n))
-      alert(t('settings.saveSuccess'))
-    } catch (e) {
-      alert(t('settings.saveFailed') + e)
-    }
-  }
-
-  async function saveGenParamsGlobal() {
-    try {
-      await settingsSet('gen_model', genModel.trim())
-      await settingsSet('gen_ratio', genRatio.trim())
-      await settingsSet('gen_style', genStyle.trim())
-      alert(t('settings.saveSuccess'))
-    } catch (e) {
-      alert(t('settings.genParamsSaveFailed') + e)
+      notify(t('settings.saveFailed') + e)
     }
   }
 
@@ -166,7 +130,7 @@ export default function SettingsPage() {
       await settingsSet('gen_params_apply', value ? 'true' : 'false')
       setGenApply(value)
     } catch (e) {
-      alert(t('settings.saveFailed') + e)
+      notify(t('settings.saveFailed') + e)
     }
   }
 
@@ -175,7 +139,7 @@ export default function SettingsPage() {
       await settingsSet('delete_conversation_after_download', value ? 'true' : 'false')
       setDeleteConversation(value)
     } catch (e) {
-      alert(t('settings.saveFailed') + e)
+      notify(t('settings.saveFailed') + e)
     }
   }
 
@@ -185,7 +149,7 @@ export default function SettingsPage() {
         await settingsSet('notify_enabled', 'false')
         setNotifyEnabled(false)
       } catch (e) {
-        alert(t('settings.saveFailed') + e)
+        notify(t('settings.saveFailed') + e)
       }
       return
     }
@@ -196,21 +160,21 @@ export default function SettingsPage() {
         granted = result === 'granted'
       }
       if (!granted) {
-        alert(t('settings.notifyPermissionDenied'))
+        notify(t('settings.notifyPermissionDenied'))
       }
       await settingsSet('notify_enabled', 'true')
       setNotifyEnabled(true)
     } catch (e) {
-      alert(t('settings.saveFailed') + e)
+      notify(t('settings.saveFailed') + e)
     }
   }
 
   async function chooseAipRootDir() {
     try {
       const picked = await openDialog({ directory: true, multiple: false })
-      if (picked && typeof picked === 'string') setAipRootDir(picked)
+      if (picked && typeof picked === 'string') await saveSetting('aip_root_dir', picked, setAipRootDir)
     } catch (e) {
-      alert(t('settings.aipProbeFail') + e)
+      notify(t('settings.aipProbeFail') + e)
     }
   }
 
@@ -218,9 +182,9 @@ export default function SettingsPage() {
     setProbingLivePhoto(true)
     try {
       const result = await livePhotoProbe()
-      alert(`${t('settings.aipProbeOk')}\nCLI: ${result.cli}\n${t('settings.aipOutputDir')}: ${result.output_dir}`)
+      notify(`${t('settings.aipProbeOk')}\nCLI: ${result.cli}\n${t('settings.aipOutputDir')}: ${result.output_dir}`)
     } catch (e) {
-      alert(t('settings.aipProbeFail') + e)
+      notify(t('settings.aipProbeFail') + e)
     } finally {
       setProbingLivePhoto(false)
     }
@@ -228,13 +192,17 @@ export default function SettingsPage() {
 
   return (
     <div style={{ padding: '24px' }}>
-      <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '24px' }}>{t('nav.settings')}</h2>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', marginBottom: '24px' }}>
+        <h2 style={{ fontSize: '20px', fontWeight: '600' }}>{t('nav.settings')}</h2>
+        {saved && <span style={{ fontSize: '12px', color: '#166534' }}>{t('settings.saveSuccess')}</span>}
+      </div>
       <div style={{ background: '#fff', border: '1px solid #e5e5e5', borderRadius: '12px', padding: '24px' }}>
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.projectRoot')}</label>
           <input
             value={projectRoot}
             onChange={(e) => setProjectRoot(e.target.value)}
+            onBlur={() => void saveSetting('project_root', projectRoot)}
             style={{ width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
           />
         </div>
@@ -245,11 +213,11 @@ export default function SettingsPage() {
             <input
               value={aipRootDir}
               onChange={(e) => setAipRootDir(e.target.value)}
+              onBlur={() => void saveSetting('aip_root_dir', aipRootDir, setAipRootDir)}
               placeholder={t('settings.aipRootDirPlaceholder')}
               style={{ flex: '1 1 320px', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
             />
             <button onClick={chooseAipRootDir} style={{ padding: '8px 14px', background: '#fff', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer' }}>{t('btn.browse')}</button>
-            <button onClick={() => saveKey('aip_root_dir', () => aipRootDir, setAipRootDir)} style={{ padding: '8px 14px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>{t('btn.save')}</button>
             <button onClick={probeAip} disabled={probingLivePhoto} style={{ padding: '8px 14px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '6px', cursor: probingLivePhoto ? 'not-allowed' : 'pointer' }}>{probingLivePhoto ? t('settings.aipProbing') : t('settings.aipProbe')}</button>
           </div>
         </div>
@@ -258,11 +226,11 @@ export default function SettingsPage() {
           <p style={{ fontSize: '12px', color: '#9ca3af', margin: '0 0 8px' }}>{t('settings.maintenanceHint')}</p>
           <button
             onClick={async () => {
-              if (!window.confirm(t('settings.cleanupStaleConfirm'))) return
+              if (!(await askConfirm(t('settings.cleanupStaleConfirm')))) return
               try {
                 const n = await cleanupStaleTaskRecords()
-                alert(t('settings.cleanupStaleDone', { n }))
-              } catch (e) { alert(t('settings.cleanupStaleFailed') + e) }
+                notify(t('settings.cleanupStaleDone', { n }))
+              } catch (e) { notify(t('settings.cleanupStaleFailed') + e) }
             }}
             style={{ padding: '8px 14px', background: '#fff', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer' }}
           >
@@ -284,19 +252,18 @@ export default function SettingsPage() {
           <label style={{ display: 'block', fontSize: '13px', color: '#6b7280', marginBottom: '6px' }}>{t('settings.genParamsGlobal')}</label>
           <p style={{ fontSize: '12px', color: '#9ca3af', margin: '0 0 8px' }}>{t('settings.genParamsNote')}</p>
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            <select value={genModel} onChange={(e) => setGenModel(e.target.value)} style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+            <select value={genModel} onChange={(e) => { setGenModel(e.target.value); void saveSetting('gen_model', e.target.value) }} style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
               <option value="">（{t('settings.genParamsModel')}）</option>
               {GEN_MODEL_OPTIONS.map((m) => (<option key={m} value={m}>{m}</option>))}
             </select>
-            <select value={genRatio} onChange={(e) => setGenRatio(e.target.value)} style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+            <select value={genRatio} onChange={(e) => { setGenRatio(e.target.value); void saveSetting('gen_ratio', e.target.value) }} style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
               <option value="">（{t('settings.genParamsRatio')}）</option>
               {GEN_RATIO_OPTIONS.map((r) => (<option key={r} value={r}>{r}</option>))}
             </select>
-            <select value={genStyle} onChange={(e) => setGenStyle(e.target.value)} style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
+            <select value={genStyle} onChange={(e) => { setGenStyle(e.target.value); void saveSetting('gen_style', e.target.value) }} style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px' }}>
               <option value="">（{t('settings.genParamsStyle')}）</option>
               {GEN_STYLE_OPTIONS.map((s) => (<option key={s} value={s}>{s}</option>))}
             </select>
-            <button onClick={saveGenParamsGlobal} style={{ padding: '8px 14px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>{t('btn.save')}</button>
           </div>
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px', fontSize: '13px', cursor: 'pointer' }}>
             <input type="checkbox" checked={genApply} onChange={(e) => toggleGenApply(e.target.checked)} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
@@ -313,11 +280,22 @@ export default function SettingsPage() {
               max={20}
               value={expectedImages}
               onChange={(e) => setExpectedImages(e.target.value)}
+              onBlur={() => {
+                const trimmed = expectedImages.trim()
+                if (trimmed !== '') {
+                  const n = Number(trimmed)
+                  if (!Number.isInteger(n) || n < 1 || n > 20) {
+                    notify(t('settings.expectedImagesInvalid'))
+                    return
+                  }
+                  setExpectedImages(String(n))
+                  void saveSetting('expected_images_per_round', String(n), setExpectedImages)
+                }
+              }}
               placeholder="5"
               style={{ width: '120px', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
             />
             <span style={{ fontSize: '13px', color: '#6b7280' }}>{t('settings.expectedImagesUnit')}</span>
-            <button onClick={saveExpectedImages} style={{ padding: '8px 14px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>{t('btn.save')}</button>
           </div>
         </div>
         <div style={{ marginBottom: '16px' }}>
@@ -343,6 +321,11 @@ export default function SettingsPage() {
             type="number"
             value={maxRetries}
             onChange={(e) => setMaxRetries(e.target.value)}
+            onBlur={() => {
+              const n = String(Math.max(0, Math.min(10, Math.floor(Number(maxRetries) || 3))))
+              setMaxRetries(n)
+              void saveSetting('max_retries', n, setMaxRetries)
+            }}
             style={{ width: '120px', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
           />
         </div>
@@ -355,10 +338,14 @@ export default function SettingsPage() {
               min={0}
               value={defaultQuota}
               onChange={(e) => setDefaultQuota(e.target.value)}
+              onBlur={() => {
+                const n = String(Math.max(0, Math.min(100000, Math.floor(Number(defaultQuota) || 0))))
+                setDefaultQuota(n)
+                void saveSetting('default_account_daily_quota', n, setDefaultQuota)
+              }}
               style={{ width: '120px', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
             />
             <span style={{ fontSize: '13px', color: '#6b7280' }}>{t('settings.defaultQuotaUnit')}</span>
-            <button onClick={saveDefaultQuota} style={{ padding: '8px 14px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>{t('btn.save')}</button>
           </div>
         </div>
         <div style={{ marginBottom: '16px' }}>
@@ -433,7 +420,7 @@ export default function SettingsPage() {
               try {
                 await settingsSet('execution_mode', next)
               } catch (err) {
-                alert(t('settings.saveFailed') + err)
+                notify(t('settings.saveFailed') + err)
               }
             }}
             style={{ padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px' }}
@@ -456,7 +443,7 @@ export default function SettingsPage() {
                   await schedulerAutoRunSet(next)
                   setAutoRunGate(next)
                 } catch (err) {
-                  alert(t('settings.saveFailed') + String(err))
+                  notify(t('settings.saveFailed') + String(err))
                 }
               }}
               style={{ width: '18px', height: '18px', cursor: 'pointer' }}
@@ -491,20 +478,6 @@ export default function SettingsPage() {
               {installing ? t('settings.installing') : t('settings.downloadInstall')}
             </button>
           </div>
-        </div>
-        <div style={{ display: 'flex', gap: '12px' }}>
-          <button
-            onClick={() => saveKey('project_root', () => projectRoot, setProjectRoot)}
-            style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
-          >
-            {t('settings.saveProjectRoot')}
-          </button>
-          <button
-            onClick={() => saveKey('max_retries', () => maxRetries, setMaxRetries)}
-            style={{ padding: '8px 16px', background: '#166534', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
-          >
-            {t('settings.saveMaxRetries')}
-          </button>
         </div>
       </div>
     </div>
