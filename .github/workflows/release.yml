@@ -41,13 +41,11 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
           releaseBody: |-
-            v1.7.1（2026-11-25）——见 CHANGELOG.md 的 [v1.7.1] 段。
+            v1.7.2（2026-11-25）——见 CHANGELOG.md 的 [v1.7.2] 段。
 
             主要内容（修复版）：
-            - 确认框不再抢先执行：全部改为 Tauri 异步对话框，输入改应用内弹窗，避免“未确认就执行 + 同时弹报错框”。
-            - 设置页改为实时保存，去掉各配置项旁边和页面底部的重复保存按钮。
-            - output 下软链接 / junction 挂载的任务文件夹不再报“路径不在项目输出目录内”，打开/查看/删图均可用。
-            - 中文 Windows 下 AI Image Process 的 GBK 输出不再误报“stream did not contain valid UTF-8”，实况生成成功后能正确识别。
+            - 项目工作台「参考图」页的「打开目录」现在直接打开该项目的 references 参考图目录（缺失时自动创建），不再打开项目根目录。
+            - 页面右上角的「打开目录」仍打开项目根目录，两个按钮通过悬停提示区分。
 
             安装包自带内置运行时，安装后即可使用。
           releaseDraft: false

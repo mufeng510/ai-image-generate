@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [v1.7.2] - 2026-11-25
+
+### 修复
+
+- **项目工作台「参考图」页「打开目录」**：改为打开该项目的 `references` 参考图目录（缺失时自动创建），不再打开项目根目录；页面右上角的「打开目录」仍打开项目根目录，两者通过悬停提示区分。
+
+### 验证
+
+- `npx tsc --noEmit`、`npm run build`、`cargo test` 67/67 全绿；新增 `ensure_references_creates_and_resolves_root_references_dir` 单测。
+
 ## [v1.7.1] - 2026-11-25
 
 ### 修复

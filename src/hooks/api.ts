@@ -289,6 +289,11 @@ export async function projectOpenFolder(id: number): Promise<void> {
   return invoke('project_open_folder', { id })
 }
 
+/** 打开项目 references 目录（参考图根目录，缺失时自动创建） */
+export async function projectOpenReferencesFolder(id: number): Promise<void> {
+  return invoke('project_open_references_folder', { id })
+}
+
 export async function projectPromptGet(id: number): Promise<string> {
   return invoke('project_prompt_get', { id })
 }

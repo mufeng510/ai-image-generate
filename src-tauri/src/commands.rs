@@ -473,6 +473,14 @@ pub async fn project_open_folder(id: i64) -> Result<(), String> {
     open_in_file_manager(&root)
 }
 
+/// 打开项目的 references（参考图根目录）；目录缺失时自动创建。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_open_references_folder(id: i64) -> Result<(), String> {
+    let root = project_root_by_id(id)?;
+    let refs = ensure_references(&root)?;
+    open_in_file_manager(&refs)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn project_prompt_get(id: i64) -> Result<String, String> {
     let root = project_root_by_id(id)?;
@@ -1183,6 +1191,16 @@ mod project_tests {
         assert_eq!(stats.total_images, 0);
         assert_eq!(stats.folder_count, 0);
         assert!(stats.folders.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_references_creates_and_resolves_root_references_dir() {
+        let dir = temp_project_dir("open-refs");
+        let _ = std::fs::remove_dir_all(dir.join("references"));
+        let refs = ensure_references(&dir).unwrap();
+        assert_eq!(refs, dir.join("references").canonicalize().unwrap());
+        assert!(refs.is_dir());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

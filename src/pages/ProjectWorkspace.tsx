@@ -22,6 +22,7 @@ import {
   projectRefList,
   projectRefOpen,
   projectOpenFolder,
+  projectOpenReferencesFolder,
   GEN_MODEL_OPTIONS,
   GEN_RATIO_OPTIONS,
   GEN_STYLE_OPTIONS,
@@ -225,7 +226,7 @@ export default function ProjectWorkspace({ projectId, projectName, onOpenTask, o
             <div style={{ fontSize: '13px', color: '#6b7280' }}>
               {stats ? t('projects.chartBars', { n: stats.total_images, folders: stats.folder_count }) : '…'}
             </div>
-            <button onClick={() => projectOpenFolder(projectId).catch((e) => notify(e))} style={btnStyle}>{t('btn.openFolder')}</button>
+            <button onClick={() => projectOpenReferencesFolder(projectId).catch((e) => notify(e))} style={btnStyle} title={t('workspace.openRefsFolderTitle')}>{t('btn.openFolder')}</button>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '12px' }}>
             {refs.map((item) => (

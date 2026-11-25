@@ -27,6 +27,7 @@ fn main() {
             commands::project_import_candidates,
             commands::project_rename,
             commands::project_open_folder,
+            commands::project_open_references_folder,
             commands::project_prompt_get,
             commands::project_prompt_set,
             commands::project_gen_params_get,
