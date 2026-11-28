@@ -5,7 +5,7 @@
  * 运行中任务的操作仍走 Tauri Commands，状态变化通过 Tauri Events 推送。
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useI18n } from '@/i18n'
 import {
   taskList,
@@ -70,6 +70,7 @@ export default function ExecutionPage({ onFolderSelect }: { onFolderSelect: (sel
   const [rounds, setRounds] = useState('1')
   const [logs, setLogs] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
+  const warnedStaleProjects = useRef(false)
 
   /** 列表真相源：扫描磁盘文件夹；同时拉一份运行中任务用于操作按钮 */
   const loadFolders = useCallback(async () => {
@@ -77,8 +78,14 @@ export default function ExecutionPage({ onFolderSelect }: { onFolderSelect: (sel
     try {
       const ps = await projectList()
       setProjects(ps)
-      const groups = await Promise.all(ps.map((p) => projectTaskFolders(p.id!)))
-      setFolders(groups.flat())
+      // 逐个项目隔离失败：某个项目的根目录在迁移后失效时，不能让整个任务队列变空
+      const results = await Promise.allSettled(ps.map((p) => projectTaskFolders(p.id!)))
+      setFolders(results.flatMap((r) => (r.status === 'fulfilled' ? r.value : [])))
+      const failed = ps.filter((_, i) => results[i].status === 'rejected')
+      if (failed.length > 0 && !warnedStaleProjects.current) {
+        warnedStaleProjects.current = true
+        notify(t('tasks.folderScanFailed', { names: failed.map((p) => p.name).join('、') }))
+      }
       setTasks(await taskList())
     } catch (e) {
       console.error('加载任务文件夹失败:', e)
