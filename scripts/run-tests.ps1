@@ -33,6 +33,16 @@ Invoke-Step 'Rust unit tests' {
     Push-Location src-tauri
     try { cargo test } finally { Pop-Location }
 }
+Invoke-Step 'Tauri IPC arg naming' {
+    $api = Get-Content src/hooks/api.ts -Raw
+    if ($api -match "invoke\('project_force_delete',\s*\{\s*id,\s*removeDisk\s*\}") {
+        throw 'project_force_delete must pass remove_disk (snake_case), not removeDisk'
+    }
+    if ($api -notmatch "invoke\('project_force_delete',\s*\{\s*id,\s*remove_disk:\s*removeDisk\s*\}") {
+        throw 'missing correct project_force_delete IPC arg spelling'
+    }
+    Write-Output 'IPC arg names OK'
+}
 Invoke-Step 'TypeScript type check' { npx tsc --noEmit }
 Invoke-Step 'frontend build' { npm run build }
 

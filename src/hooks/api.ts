@@ -278,9 +278,10 @@ export async function projectDeletePreview(id: number): Promise<ProjectDeletePre
   return invoke('project_delete_preview', { id })
 }
 
-/** 强制删除：事务内级联清理数据库；removeDisk=true 时同时永久删除磁盘项目文件夹 */
+/** 强制删除：事务内级联清理数据库；removeDisk=true 时同时永久删除磁盘项目文件夹。
+ *  注意：Rust 命令声明为 snake_case，IPC 键必须用 remove_disk（不能用 camelCase）。 */
 export async function projectForceDelete(id: number, removeDisk: boolean): Promise<ProjectDeletePreview> {
-  return invoke('project_force_delete', { id, removeDisk })
+  return invoke('project_force_delete', { id, remove_disk: removeDisk })
 }
 
 export async function projectGenParamsGet(id: number): Promise<GenParams> {
