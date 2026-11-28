@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [v1.8.1] - 2026-11-28
+
+### 修复
+
+- **v1.8.0 删除项目报 `invalid args 'remove_disk' for command 'project_force_delete'`**：前端 IPC 传了 camelCase 的 `removeDisk`，而 Rust 命令按 snake_case 声明参数为 `remove_disk`。现改为传 `remove_disk`，并在一键离线脚本中加入 IPC 参数命名静态检查，防止回归。
+
 ## [v1.8.0] - 2026-11-28
 
 ### 修复
