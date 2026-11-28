@@ -4,7 +4,8 @@ import { convertFileSrc } from '@tauri-apps/api/core'
 import {
   projectList,
   projectCreate,
-  projectDelete,
+  projectDeletePreview,
+  projectForceDelete,
   projectImport,
   projectImportCandidates,
   projectRename,
@@ -29,6 +30,7 @@ import {
   GEN_RATIO_OPTIONS,
   GEN_STYLE_OPTIONS,
   type Project,
+  type ProjectDeletePreview,
   type ProjectImportCandidate,
   type ProjectReferenceStats,
   type ProjectHistoryItem,
@@ -37,6 +39,7 @@ import {
   type GenParams,
 } from '@/hooks/api'
 import { useI18n } from '@/i18n'
+import { useSaveHint } from '@/hooks/useSaveHint'
 import { askConfirm, notify } from '@/utils/dialog'
 import { useTaskStatusLabels } from '@/utils/taskStatus'
 import { formatDateTime } from '@/utils/datetime'
@@ -97,6 +100,7 @@ const modalCard: React.CSSProperties = {
 
 export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projectId: number, name: string) => void }) {
   const { t } = useI18n()
+  const saveHint = useSaveHint()
   const STATUS_LABELS = useTaskStatusLabels()
   const [projects, setProjects] = useState<Project[]>([])
   const [name, setName] = useState('')
@@ -115,6 +119,12 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
   const [promptEditor, setPromptEditor] = useState<{ id: number; name: string } | null>(null)
   const [promptText, setPromptText] = useState('')
   const [promptSaving, setPromptSaving] = useState(false)
+
+  // 删除确认弹窗：默认仅清数据库，可勾选同时永久删除磁盘文件夹
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null)
+  const [deletePreview, setDeletePreview] = useState<ProjectDeletePreview | null>(null)
+  const [deleteRemoveDisk, setDeleteRemoveDisk] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
 
   const [history, setHistory] = useState<{ id: number; name: string } | null>(null)
   const [historyItems, setHistoryItems] = useState<ProjectHistoryItem[]>([])
@@ -209,14 +219,42 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
     }
   }
 
-  async function handleDelete(id: number) {
-    if (!(await askConfirm(t('projects.deleteConfirm')))) return
+  async function handleOpenDelete(p: Project) {
+    setDeleteTarget(p)
+    setDeletePreview(null)
+    setDeleteRemoveDisk(false)
+    setDeleteBusy(true)
     try {
-      await projectDelete(id)
-      setProjects(projects.filter((p) => p.id !== id))
-      if (expandedId === id) setExpandedId(null)
+      setDeletePreview(await projectDeletePreview(p.id!))
+    } catch (e) {
+      notify(t('projects.deletePreviewFailed') + e)
+      setDeleteTarget(null)
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
+
+  async function handleConfirmDelete() {
+    if (!deleteTarget || deleteBusy) return
+    setDeleteBusy(true)
+    try {
+      const result = await projectForceDelete(deleteTarget.id!, deleteRemoveDisk)
+      setProjects(projects.filter((p) => p.id !== deleteTarget.id))
+      if (expandedId === deleteTarget.id) setExpandedId(null)
+      const parts = [
+        t('projects.deleteImpact', {
+          tasks: result.tasks, rounds: result.rounds, images: result.images,
+          pool: result.poolRecords, logs: result.logs, notices: result.notifications,
+        }),
+      ]
+      if (result.diskDeleted) parts.push(t('projects.deleteDiskDone'))
+      if (result.diskError) parts.push(t('projects.deleteDiskSkipped', { reason: result.diskError }))
+      setDeleteTarget(null)
+      notify(t('projects.deleteDone', { summary: parts.join(' ') }))
     } catch (e) {
       notify(t('projects.deleteFailed') + e)
+    } finally {
+      setDeleteBusy(false)
     }
   }
 
@@ -378,7 +416,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
         style: genParamsEditor.style.trim() || null,
       })
       await projectExpectedImagesSet(genParamsEditor.id, expectedValue)
-      notify(t('settings.saveSuccess'))
+      saveHint.markSaved(t('common.savedHint'))
       setGenParamsEditor(null)
     } catch (e) {
       notify(t('projects.paramsSaveFailed') + e)
@@ -400,7 +438,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
     setPromptSaving(true)
     try {
       await projectPromptSet(promptEditor.id, promptText)
-      notify(t('projects.promptSaved'))
+      saveHint.markSaved(t('common.savedHint'))
       setPromptEditor(null)
     } catch (e) {
       notify(t('projects.savePromptFailed') + e)
@@ -425,7 +463,10 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
 
   return (
     <div style={{ padding: '24px' }}>
-      <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '16px' }}>{t('nav.projects')}</h2>
+      <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+        {t('nav.projects')}
+        {saveHint.hint && <span style={{ fontSize: '12px', fontWeight: '400', color: '#166534' }}>{saveHint.hint}</span>}
+      </h2>
       <form onSubmit={handleCreate} style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
         <input
           placeholder={t('projects.placeholderName')}
@@ -516,7 +557,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
                     <button onClick={() => handleRename(p)} style={actionStyle}>
                       {t('btn.rename')}
                     </button>
-                    <button onClick={() => handleDelete(id)} style={dangerStyle}>
+                    <button onClick={() => handleOpenDelete(p)} style={dangerStyle}>
                       {t('btn.delete')}
                     </button>
                   </td>
@@ -651,6 +692,55 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
               <button onClick={() => setImportOpen(false)} style={{ ...actionStyle, marginRight: 0, padding: '8px 16px' }}>
                 {t('common.close')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div style={modalOverlay} onClick={() => { if (!deleteBusy) setDeleteTarget(null) }}>
+          <div style={{ ...modalCard, width: 'min(560px, 94vw)' }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '8px' }}>
+              {t('projects.deleteModalTitle', { name: deleteTarget.name })}
+            </h3>
+            <p style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '12px', lineHeight: 1.6 }}>
+              {t('projects.deleteModalNote')}
+            </p>
+            {deleteBusy && !deletePreview ? (
+              <div style={{ padding: '12px', fontSize: '12px', color: '#9ca3af' }}>{t('common.loading')}</div>
+            ) : deletePreview && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ fontSize: '12px', color: '#374151', padding: '10px', background: '#f9fafb', borderRadius: '6px' }}>
+                  {t('projects.deleteImpact', {
+                    tasks: deletePreview.tasks, rounds: deletePreview.rounds, images: deletePreview.images,
+                    pool: deletePreview.poolRecords, logs: deletePreview.logs, notices: deletePreview.notifications,
+                  })}
+                </div>
+                <div style={{ fontSize: '12px', color: '#6b7280', wordBreak: 'break-all' }}>
+                  {t('projects.deleteDiskPath', {
+                    path: deletePreview.rootPath,
+                    state: deletePreview.diskExists ? t('projects.deleteDiskExists') : t('projects.deleteDiskMissing'),
+                  })}
+                </div>
+                <label style={{ fontSize: '13px', color: '#374151', display: 'flex', alignItems: 'flex-start', gap: '8px', cursor: deletePreview.diskExists ? 'pointer' : 'not-allowed' }}>
+                  <input
+                    type="checkbox"
+                    checked={deleteRemoveDisk}
+                    disabled={!deletePreview.diskExists}
+                    onChange={(e) => setDeleteRemoveDisk(e.target.checked)}
+                    style={{ width: '16px', height: '16px', marginTop: '2px', flexShrink: 0 }}
+                  />
+                  {t('projects.deleteRemoveDisk')}
+                </label>
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
+              <button onClick={() => setDeleteTarget(null)} disabled={deleteBusy} style={{ ...actionStyle, marginRight: 0, padding: '8px 16px' }}>
+                {t('common.cancel')}
+              </button>
+              <button onClick={handleConfirmDelete} disabled={deleteBusy || !deletePreview} style={{ ...dangerStyle, marginRight: 0, padding: '8px 16px' }}>
+                {deleteBusy ? t('common.deleting') : t('btn.delete')}
               </button>
             </div>
           </div>

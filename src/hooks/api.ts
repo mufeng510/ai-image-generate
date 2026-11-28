@@ -260,6 +260,29 @@ export async function projectDelete(id: number): Promise<void> {
   return invoke('project_delete', { id })
 }
 
+/** 删除项目前的预览：关联记录数量与磁盘目录状态（camelCase 来自后端 serde） */
+export interface ProjectDeletePreview {
+  tasks: number
+  rounds: number
+  images: number
+  poolRecords: number
+  logs: number
+  notifications: number
+  rootPath: string
+  diskExists: boolean
+  diskDeleted: boolean
+  diskError: string | null
+}
+
+export async function projectDeletePreview(id: number): Promise<ProjectDeletePreview> {
+  return invoke('project_delete_preview', { id })
+}
+
+/** 强制删除：事务内级联清理数据库；removeDisk=true 时同时永久删除磁盘项目文件夹 */
+export async function projectForceDelete(id: number, removeDisk: boolean): Promise<ProjectDeletePreview> {
+  return invoke('project_force_delete', { id, removeDisk })
+}
+
 export async function projectGenParamsGet(id: number): Promise<GenParams> {
   return invoke('project_gen_params_get', { id })
 }

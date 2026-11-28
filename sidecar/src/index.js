@@ -39,7 +39,7 @@ const { ImagePool } = require('./pool');
 const { downloadImage } = require('./downloader');
 const { dismissPageOverlays, waitAndDismissOverlays, setLogger } = require('./overlays');
 const { isCaptchaText } = require('./detectors');
-const { deleteCurrentConversation } = require('./deleter');
+const { chatIdFromUrl, deleteCurrentConversation } = require('./deleter');
 const { installResponseCapture, getCapturedImages, clearCaptured } = require('./response-capture');
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -629,6 +629,9 @@ async function generateImagesInner(cmd) {
     return { ok: false, reason: 'browser_not_started' };
   }
   const page = await acquirePage(ctx);
+  // 记录本轮生成所在页面：删除会话时必须复用它，不能随便取上下文里的第一个标签页
+  ctx.generatedPage = page;
+  ctx.generatedChatId = null;
   // 新一轮生成：清空网络拦截缓存，避免上一轮的原图混入本轮提取
   clearCaptured(page);
 
@@ -801,6 +804,7 @@ async function generateImagesInner(cmd) {
     }
   }
 
+  ctx.generatedChatId = chatIdFromUrl(page.url()) || ctx.generatedChatId;
   // 6. 等待生成完成：img[src*=rc_gen_image] 出现且数量稳定
   const genTimeoutMs = cmd.generation_timeout_ms || 180000;
   const lastCount = await waitForGeneration(page, genTimeoutMs, cmd.task_id, cmd.expected_images);
@@ -809,21 +813,61 @@ async function generateImagesInner(cmd) {
     return { ok: false, reason: 'generation_timeout', images_found: 0, message: '等待生图超时，页面未出现生成图片。' };
   }
 
-  log('info', `生图完成，页面上发现 ${lastCount} 张生成图片`);
-  return { ok: true, images_found: lastCount };
+  // 提交后页面通常跳到 /chat/<id>；记录会话 id，供删除会话阶段精确定位
+  ctx.generatedChatId = chatIdFromUrl(page.url()) || ctx.generatedChatId;
+  log('info', `生图完成，页面上发现 ${lastCount} 张生成图片${ctx.generatedChatId ? `，会话 #${ctx.generatedChatId}` : ''}`);
+  return { ok: true, images_found: lastCount, chat_id: ctx.generatedChatId || undefined, chat_url: page.url() };
 }
 
-/** 删除当前打开的豆包会话（下载完成后按需调用；只删当前 /chat/<id>，失败不抛出） */
+/**
+ * 删除本轮生成对应的豆包会话（下载完成后按需调用；只删当前 /chat/<id>，失败不抛出）。
+ * 关键：必须复用生成时那个页面。acquirePage 取上下文第一个标签页，用户另开标签页时
+ * 会拿到非会话页，导致 not_chat_detail —— 这正是「删除会话好像失效」的常见原因。
+ */
 async function deleteConversation(cmd) {
   const accountId = cmd.account_id;
   const ctx = contexts.get(accountId);
   if (!ctx) {
     return { ok: false, reason: 'browser_not_started' };
   }
-  const page = await acquirePage(ctx);
-  const result = await deleteCurrentConversation(page);
+  const pages = ctx.context.pages().filter((p) => !p.isClosed());
+  if (pages.length === 0) {
+    return { ok: false, reason: 'no_open_page' };
+  }
+  const wanted = cmd.chat_id || ctx.generatedChatId;
+  const page = (wanted && pages.find((p) => chatIdFromUrl(p.url()) === wanted))
+    || (wanted && ctx.generatedPage && !ctx.generatedPage.isClosed() ? ctx.generatedPage : null)
+    || pages.find((p) => chatIdFromUrl(p.url()))
+    || (ctx.generatedPage && !ctx.generatedPage.isClosed() ? ctx.generatedPage : null)
+    || pages[pages.length - 1];
+  ctx.page = page;
+  log('info', `删除会话使用页面: ${page.url()}${wanted ? `（目标会话 #${wanted}）` : ''}`);
+
+  const projectRoot = path.resolve(cmd.project_root || '.');
+  const diagDir = path.join(projectRoot, 'output', 'diagnostics');
+  const saveDiag = async (tag) => {
+    try {
+      ensureDir(diagDir);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      await page.screenshot({ path: path.join(diagDir, `${tag}_${stamp}.png`), fullPage: false }).catch(() => {});
+      fs.writeFileSync(path.join(diagDir, `${tag}_${stamp}.html`), await page.content(), 'utf-8');
+      fs.writeFileSync(
+        path.join(diagDir, `${tag}_${stamp}.json`),
+        JSON.stringify({ tag, url: page.url(), timestamp: new Date().toISOString(), chat_id: wanted || null }, null, 2),
+        'utf-8'
+      );
+      log('info', `删除会话诊断已保存: ${diagDir}\\${tag}_${stamp}.png`);
+    } catch (err) {
+      log('warn', `保存删除会话诊断失败: ${err.message}`);
+    }
+  };
+
+  const result = await deleteCurrentConversation(page, {
+    onFail: async (reason) => saveDiag(`delete_conversation_${reason}`),
+  });
   if (result.ok) {
     log('info', `已删除豆包会话 #${result.chat_id}${result.verified ? '' : '（未能确认消失，请留意侧边栏）'}`);
+    ctx.generatedChatId = null;
   } else {
     log('warn', `删除豆包会话未完成（${result.reason}）：${result.message || ''}`);
   }

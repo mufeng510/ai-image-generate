@@ -34,6 +34,7 @@ import {
   type ReferenceItem,
 } from '@/hooks/api'
 import { useI18n } from '@/i18n'
+import { useSaveHint } from '@/hooks/useSaveHint'
 import { formatDateTime } from '@/utils/datetime'
 import { notify } from '@/utils/dialog'
 
@@ -63,6 +64,8 @@ interface Props {
 
 export default function ProjectWorkspace({ projectId, projectName, onOpenTask, onBack }: Props) {
   const { t } = useI18n()
+  const promptHint = useSaveHint()
+  const paramsHint = useSaveHint()
   const [tab, setTab] = useState<Tab>('tasks')
   const [folders, setFolders] = useState<TaskFolder[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -115,7 +118,14 @@ export default function ProjectWorkspace({ projectId, projectName, onOpenTask, o
 
   async function savePrompt() {
     setSavingPrompt(true)
-    try { await projectPromptSet(projectId, prompt) } catch (e) { notify(t('btn.save') + e) } finally { setSavingPrompt(false) }
+    try {
+      await projectPromptSet(projectId, prompt)
+      promptHint.markSaved(t('common.savedHint'))
+    } catch (e) {
+      notify(t('btn.save') + e)
+    } finally {
+      setSavingPrompt(false)
+    }
   }
 
   async function saveParams() {
@@ -123,6 +133,7 @@ export default function ProjectWorkspace({ projectId, projectName, onOpenTask, o
       await projectGenParamsSet(projectId, genParams)
       const value = expected.trim() === '' ? null : Math.max(1, Math.min(999, Number(expected) || 1))
       await projectExpectedImagesSet(projectId, value)
+      paramsHint.markSaved(t('common.savedHint'))
     } catch (e) {
       notify(t('btn.save') + e)
     }
@@ -250,8 +261,11 @@ export default function ProjectWorkspace({ projectId, projectName, onOpenTask, o
           <div style={{ background: '#fff', border: '1px solid #e5e5e5', borderRadius: '12px', padding: '20px' }}>
             <div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '10px' }}>{t('workspace.tabSettings')}</div>
             <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={10} style={{ width: '100%', padding: '10px', border: '1px solid #d1d5db', borderRadius: '6px', fontFamily: 'monospace', fontSize: '13px' }} />
-            <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'flex-end', gap: '6px' }}>
-              <button onClick={savePrompt} disabled={savingPrompt} style={primaryStyle}>{t('btn.save')}</button>
+            <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '10px' }}>
+              {promptHint.hint && <span style={{ fontSize: '12px', color: '#166534' }}>{promptHint.hint}</span>}
+              <button onClick={savePrompt} disabled={savingPrompt} style={primaryStyle}>
+                {savingPrompt ? t('common.saving') : t('btn.save')}
+              </button>
             </div>
           </div>
           <div style={{ background: '#fff', border: '1px solid #e5e5e5', borderRadius: '12px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -283,7 +297,8 @@ export default function ProjectWorkspace({ projectId, projectName, onOpenTask, o
                 <input type="number" min={1} max={20} value={expected} onChange={(e) => setExpected(e.target.value)} style={{ ...btnStyle, width: '72px', marginLeft: '6px' }} />
               </label>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '10px' }}>
+              {paramsHint.hint && <span style={{ fontSize: '12px', color: '#166534' }}>{paramsHint.hint}</span>}
               <button onClick={saveParams} style={primaryStyle}>{t('btn.save')}</button>
             </div>
           </div>

@@ -1983,6 +1983,21 @@ fn log_round_warn(task_id: i64, message: &str) {
     }
 }
 
+/** 写一条软件内通知（删除会话等非主链路失败也需要让用户看见） */
+fn write_task_notification(task_id: i64, kind: &str, title: &str, message: &str, level: &str) {
+    if let Ok(conn) = get_connection() {
+        let task_name: Option<String> = conn
+            .query_row("SELECT name FROM tasks WHERE id = ?1", [task_id], |r| r.get(0))
+            .ok();
+        let message: String = message.chars().take(1000).collect();
+        let now = Utc::now().to_rfc3339();
+        let _ = conn.execute(
+            "INSERT INTO notifications (kind, title, message, level, task_id, task_name, read, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
+            rusqlite::params![kind, title, message, level, task_id, task_name, now],
+        );
+    }
+}
+
 /** 终态判定：completed/failed/cancelled 视为任务结束；paused / needs_manual_intervention / waiting_confirmation 保留浏览器等人工恢复 */
 fn is_terminal_task_status(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "cancelled")
@@ -2402,6 +2417,7 @@ async fn finish_after_generation(
             "task_id": tid,
             "request_id": delete_request_id,
             "account_id": account_id,
+            "project_root": project_root.to_string_lossy(),
         });
         match scheduler.send_sidecar_cmd(delete_cmd) {
             Ok(()) => {
@@ -2411,21 +2427,36 @@ async fn finish_after_generation(
                         if ok {
                             let chat_id = v.get("chat_id").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
                             let verified = v.get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let note = if verified { "".to_string() } else { "（未确认侧边栏已移除，请留意）".to_string() };
                             if let Ok(conn) = get_connection() {
                                 let _ = db_write_log(&conn, Some(tid), "info",
-                                    &format!("已删除本轮对应的豆包会话 #{}{}", chat_id, if verified { "" } else { "（未确认侧边栏已移除，请留意）" }));
+                                    &format!("已删除本轮对应的豆包会话 #{}{}", chat_id, note));
+                            }
+                            if !verified {
+                                write_task_notification(tid, "delete_conversation_unverified", "删除会话未能确认",
+                                    &format!("已点击删除，但未能确认会话 #{} 从侧边栏消失，请在浏览器中检查。", chat_id), "warn");
                             }
                         } else {
                             let reason = v.get("reason").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
                             let msg = v.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            log_round_warn(tid, &format!("删除豆包会话未完成（{}）：{}", reason, msg));
+                            let warn = format!("删除豆包会话未完成（{}）：{}（图片已保留，不影响本轮结果）", reason, msg);
+                            log_round_warn(tid, &warn);
+                            write_task_notification(tid, "delete_conversation_failed", "删除豆包会话未完成", &warn, "warn");
                         }
                     }
-                    WaitOutcome::Timeout => log_round_warn(tid, "删除豆包会话等待超时（图片已保留，会话未删除）"),
+                    WaitOutcome::Timeout => {
+                        let warn = "删除豆包会话等待超时（图片已保留，会话未删除）；诊断信息见项目 output/diagnostics/";
+                        log_round_warn(tid, warn);
+                        write_task_notification(tid, "delete_conversation_failed", "删除豆包会话超时", warn, "warn");
+                    }
                     WaitOutcome::Interrupted => log_round_warn(tid, "删除豆包会话阶段被中断（图片已保留）"),
                 }
             }
-            Err(e) => log_round_warn(tid, &format!("发送删除会话命令失败: {}", e)),
+            Err(e) => {
+                let warn = format!("发送删除会话命令失败: {}（图片已保留）", e);
+                log_round_warn(tid, &warn);
+                write_task_notification(tid, "delete_conversation_failed", "删除豆包会话失败", &warn, "warn");
+            }
         }
     }
     Some(success_count)

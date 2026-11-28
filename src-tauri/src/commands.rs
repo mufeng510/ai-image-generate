@@ -89,12 +89,153 @@ pub async fn project_create(name: String) -> Result<Project, String> {
     })
 }
 
+/// 删除项目前的预览：数据库关联记录数量 + 磁盘目录是否存在。
+#[derive(serde::Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDeletePreview {
+    pub tasks: i64,
+    pub rounds: i64,
+    pub images: i64,
+    pub pool_records: i64,
+    pub logs: i64,
+    pub notifications: i64,
+    pub root_path: String,
+    pub disk_exists: bool,
+    pub disk_deleted: bool,
+    pub disk_error: Option<String>,
+}
+
+/// 统计项目关联的各类记录（不修改数据库）。
+fn project_dependents(conn: &rusqlite::Connection, id: i64) -> Result<ProjectDeletePreview, String> {
+    let count = |sql: &str| -> Result<i64, String> {
+        conn.query_row(sql, rusqlite::params![id], |row| row.get(0))
+            .map_err(|e| e.to_string())
+    };
+    let root_path: String = conn
+        .query_row("SELECT root_path FROM projects WHERE id = ?1", [id], |row| row.get(0))
+        .map_err(|_| "项目不存在".to_string())?;
+    let disk_exists = {
+        let p = std::path::PathBuf::from(&root_path);
+        p.is_dir()
+    };
+    Ok(ProjectDeletePreview {
+        tasks: count("SELECT COUNT(*) FROM tasks WHERE project_id = ?1")?,
+        rounds: count("SELECT COUNT(*) FROM task_rounds WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)")?,
+        images: count("SELECT COUNT(*) FROM task_images WHERE task_round_id IN (SELECT id FROM task_rounds WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1))")?,
+        pool_records: count("SELECT COUNT(*) FROM image_pool_records WHERE project_id = ?1")?,
+        logs: count("SELECT COUNT(*) FROM execution_logs WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)")?,
+        notifications: count("SELECT COUNT(*) FROM notifications WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)")?,
+        root_path,
+        disk_exists,
+        disk_deleted: false,
+        disk_error: None,
+    })
+}
+
+/// 在事务内按外键依赖顺序删除项目及其全部关联记录。
+/// 解决「FOREIGN KEY constraint failed」：tasks / image_pool_records 引用 projects，
+/// 单独 DELETE projects 会被 SQLite 拒绝；轮次/图片/日志/通知也必须一并清理。
+fn delete_project_records(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+) -> Result<ProjectDeletePreview, String> {
+    let preview = project_dependents(tx, id)?;
+    tx.execute(
+        "DELETE FROM task_images WHERE task_round_id IN (SELECT id FROM task_rounds WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1))",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM task_rounds WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM execution_logs WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM notifications WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM tasks WHERE project_id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM image_pool_records WHERE project_id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(preview)
+}
+
+/// 删除项目（仅数据库，级联清理全部关联记录；不碰磁盘文件）。
 #[tauri::command(rename_all = "snake_case")]
 pub async fn project_delete(id: i64) -> Result<(), String> {
-    let conn = get_connection().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])
-        .map_err(|e| e.to_string())?;
+    let mut conn = get_connection().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    delete_project_records(&tx, id)?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// 强制删除项目预览（供删除弹窗展示影响范围）。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_delete_preview(id: i64) -> Result<ProjectDeletePreview, String> {
+    let conn = get_connection().map_err(|e| e.to_string())?;
+    project_dependents(&conn, id)
+}
+
+/// 磁盘删除前的安全校验：只允许删除「像项目」的目录，且绝不能是工作区根目录本身。
+fn validate_project_dir_for_deletion(
+    raw: &std::path::Path,
+    workspace: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, String> {
+    let root = std::fs::canonicalize(raw)
+        .map_err(|e| format!("无法解析磁盘路径：{}，请手动处理：{}", e, raw.display()))?;
+    let looks_like_project = ["references", "output", "prompt.txt"]
+        .iter()
+        .any(|name| root.join(name).exists());
+    let name_ok = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| !n.is_empty())
+        .unwrap_or(false);
+    let workspace_canonical = workspace.and_then(|w| std::fs::canonicalize(w).ok());
+    let not_workspace = workspace_canonical.as_ref().map(|w| root != *w).unwrap_or(true);
+    if !looks_like_project || !name_ok || !not_workspace {
+        return Err(format!(
+            "该目录未通过安全检查（不是典型项目目录、或就是项目根目录），已仅清理数据库；请人工确认后手动删除：{}",
+            root.display()
+        ));
+    }
+    Ok(root)
+}
+
+/// 强制删除项目：级联清理数据库；可选永久删除磁盘项目文件夹（不进回收站）。
+/// 磁盘删除前做保守校验，避免误删根目录/工作区根/非项目目录；校验不通过时仍完成数据库清理，
+/// 并通过 disk_error 告知用户路径需人工处理。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn project_force_delete(id: i64, remove_disk: bool) -> Result<ProjectDeletePreview, String> {
+    let mut conn = get_connection().map_err(|e| e.to_string())?;
+    let mut preview = {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let p = delete_project_records(&tx, id)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        p
+    };
+    if remove_disk && preview.disk_exists {
+        let raw = std::path::PathBuf::from(&preview.root_path);
+        let workspace = configured_workspace_root().ok();
+        match validate_project_dir_for_deletion(&raw, workspace.as_ref().map(|p| p.as_path())) {
+            Ok(root) => match std::fs::remove_dir_all(&root) {
+                Ok(()) => preview.disk_deleted = true,
+                Err(e) => preview.disk_error = Some(format!(
+                    "磁盘文件夹删除失败：{}，请手动处理：{}",
+                    e,
+                    root.display()
+                )),
+            },
+            Err(e) => preview.disk_error = Some(e),
+        }
+    }
+    Ok(preview)
 }
 
 /** 去掉 Windows canonicalize 产生的 `\\\\?\\` 前缀 */
@@ -3011,7 +3152,7 @@ pub async fn live_photo_probe() -> Result<serde_json::Value, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{make_task_folder_name, make_task_name, allocate_task_folder, read_task_meta, count_round_images, task_folder_status, json_i64, csv_field, csv_cell, render_logs_csv, rewrite_path_prefix, validate_project_folder_name, LogEntry};
+    use super::{make_task_folder_name, make_task_name, allocate_task_folder, read_task_meta, count_round_images, task_folder_status, json_i64, csv_field, csv_cell, render_logs_csv, rewrite_path_prefix, validate_project_folder_name, delete_project_records, project_dependents, validate_project_dir_for_deletion, LogEntry};
     use crate::task_scheduler;
     use chrono::Utc;
 
@@ -3054,6 +3195,74 @@ mod tests {
         assert!(validate_project_folder_name("CON").is_err());
         assert!(validate_project_folder_name("com1.txt").is_err());
         assert!(validate_project_folder_name("LPT9").is_err());
+    }
+
+    /// 开启外键后用真实表结构复现「FOREIGN KEY constraint failed」：
+    /// 级联清理必须按 task_images → task_rounds → logs/notifications → tasks → pool → projects 顺序。
+    #[test]
+    fn delete_project_cascades_dependents_with_foreign_keys_on() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::create_tables(&conn).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(
+            r#"
+            INSERT INTO projects (id, name, root_path, created_at, updated_at) VALUES (1, 'p', 'D:\\p', 't', 't');
+            INSERT INTO accounts (id, name, user_data_dir, created_at) VALUES (1, 'a', 'D:\\a', 't');
+            INSERT INTO tasks (id, name, project_id, account_id, status, created_at, updated_at) VALUES (10, 'task', 1, 1, 'completed', 't', 't');
+            INSERT INTO task_rounds (id, task_id, round_number, status) VALUES (100, 10, 1, 'completed');
+            INSERT INTO task_images (task_round_id, image_index) VALUES (100, 1);
+            INSERT INTO image_pool_records (project_id, image_path, sha256) VALUES (1, 'D:\\p\\references\\a.jpg', 'abc');
+            INSERT INTO execution_logs (task_id, level, message, created_at) VALUES (10, 'info', 'x', 't');
+            INSERT INTO notifications (kind, title, message, created_at, task_id) VALUES ('k', 'title', 'msg', 't', 10);
+            "#,
+        )
+        .unwrap();
+        let before = project_dependents(&conn, 1).unwrap();
+        assert_eq!(before.tasks, 1);
+        assert_eq!(before.rounds, 1);
+        assert_eq!(before.images, 1);
+        assert_eq!(before.pool_records, 1);
+        assert_eq!(before.logs, 1);
+        assert_eq!(before.notifications, 1);
+
+        let tx = conn.transaction().unwrap();
+        delete_project_records(&tx, 1).unwrap();
+        tx.commit().unwrap();
+
+        let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(count("SELECT COUNT(*) FROM projects WHERE id=1"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM tasks WHERE project_id=1"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM task_rounds WHERE task_id=10"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM task_images WHERE task_round_id=100"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM image_pool_records WHERE project_id=1"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM execution_logs WHERE task_id=10"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM notifications WHERE task_id=10"), 0);
+        // 其他项目的数据不能被波及
+        conn.execute("INSERT INTO projects (id, name, root_path, created_at, updated_at) VALUES (2, 'p2', 'D:\\p2', 't', 't')", []).unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM projects"), 1);
+    }
+
+    #[test]
+    fn validate_project_dir_for_deletion_accepts_project_and_rejects_unsafe_paths() {
+        let base = std::env::temp_dir().join(format!(
+            "ai-image-generate-del-test-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_millis()
+        ));
+        let project = base.join("项目A");
+        std::fs::create_dir_all(project.join("references")).unwrap();
+        std::fs::create_dir_all(project.join("output")).unwrap();
+        // 典型项目目录：通过
+        assert!(validate_project_dir_for_deletion(&project, None).is_ok());
+        // 工作区根目录本身：拒绝（即使它含有 references/output）
+        assert!(validate_project_dir_for_deletion(&project, Some(&project)).is_err());
+        // 空目录不像项目：拒绝
+        let empty = base.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(validate_project_dir_for_deletion(&empty, None).is_err());
+        // 不存在的路径：拒绝
+        assert!(validate_project_dir_for_deletion(&base.join("missing"), None).is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

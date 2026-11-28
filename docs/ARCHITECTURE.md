@@ -229,7 +229,9 @@ ai-image-generate/
 | `project_create` | 创建项目（在设置页「项目根目录」下按名称建同名文件夹） | `name` | `Project` |
 | `project_import` | 导入项目 | `path` | `Project` |
 | `project_import_candidates` | 列出工作区根目录下可导入的子文件夹（已导入的排除） | - | `Vec<ProjectImportCandidate>` |
-| `project_delete` | 删除项目 | `id` | `Result` |
+| `project_delete` | 删除项目（事务内级联清理任务/轮次/图片/池记录/日志/通知，不碰磁盘） | `id` | `Result` |
+| `project_delete_preview` | 删除前预览关联记录数量与磁盘目录状态 | `id` | `ProjectDeletePreview` |
+| `project_force_delete` | 强制删除：级联清库；`remove_disk=true` 时校验后永久删除磁盘项目文件夹 | `id, remove_disk` | `ProjectDeletePreview` |
 | `project_rename` | 重命名项目：同步移动磁盘文件夹，并改写库内指向旧目录的绝对路径；存在未结束任务时拒绝 | `id, name` | `Project` |
 | `project_prompt_save` | 保存提示词 | `project_id, content` | `Result` |
 | `account_list` | 列出账号 | - | `Vec<Account>` |

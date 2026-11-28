@@ -25,12 +25,11 @@ try {
   }
 } catch (_) { /* 忽略探测失败 */ }
 
-let chromium;
+let chromium = null;
 try {
   ({ chromium } = require('playwright'));
 } catch (err) {
-  console.log('SKIP deleter.test.js: playwright 未安装');
-  process.exit(0);
+  console.log('SKIP deleter 浏览器夹具测试: playwright 未安装（URL 纯函数测试仍执行）');
 }
 
 const { chatIdFromUrl, deleteCurrentConversation } = require('./deleter');
@@ -59,6 +58,8 @@ async function test(name, fn) {
     ['https://www.doubao.com/chat/38452124429268482', '38452124429268482'],
     ['https://www.doubao.com/chat/38452124429268482?from=sidebar', '38452124429268482'],
     ['https://www.doubao.com/chat/38452124429268482#x', '38452124429268482'],
+    ['https://www.doubao.com/chat/123456789/', '123456789'],
+    ['https://www.doubao.com/chat/12345', null],
     ['https://www.doubao.com/chat/', null],
     ['https://www.doubao.com/chat/abc', null],
     ['https://www.doubao.com/', null],
@@ -69,43 +70,51 @@ async function test(name, fn) {
     if (actual === expected) { passed++; } else { failed++; console.error(`  ✗ chatIdFromUrl(${JSON.stringify(input)}): expected ${expected}, got ${actual}`); }
   }
 
-  let browser;
-  try {
-    browser = await chromium.launch({ headless: true, channel: 'chromium' });
-  } catch (err) {
-    console.log('SKIP deleter 浏览器夹具测试: 无法启动 Chromium -', err.message);
-    console.log(`删除会话测试结果: ${passed} 通过, ${failed} 失败`);
-    process.exit(failed === 0 ? 0 : 1);
+  if (chromium) {
+    let browser;
+    try {
+      browser = await chromium.launch({ headless: true, channel: 'chromium' });
+    } catch (err) {
+      console.log('SKIP deleter 浏览器夹具测试: 无法启动 Chromium -', err.message);
+      console.log(`删除会话测试结果: ${passed} 通过, ${failed} 失败`);
+      process.exit(failed === 0 ? 0 : 1);
+    }
+
+    const page = await browser.newPage();
+
+    await test('正常流程：打开 ⋯ → 删除 → 确认删除，条目被移除', async () => {
+      await page.goto(TO_FILE_URL('delete-conversation', 'chat', '123456789', 'index.html'));
+      let failReason = null;
+      const res = await deleteCurrentConversation(page, { onFail: async (reason) => { failReason = reason; } });
+      if (!res.ok) throw new Error('expected ok, got reason: ' + res.reason);
+      if (failReason !== null) throw new Error('onFail must not fire on success');
+      if (res.chat_id !== '123456789') throw new Error('wrong chat_id: ' + res.chat_id);
+      const remaining = await page.locator('a#conversation_123456789').count();
+      if (remaining !== 0) throw new Error('sidecar item still present after delete');
+    });
+
+    await test('菜单无「删除」：不误点、ok:false、条目保留、触发 onFail', async () => {
+      await page.goto(TO_FILE_URL('delete-conversation-no-delete', 'chat', '223456789', 'index.html'));
+      let failReason = null;
+      const res = await deleteCurrentConversation(page, { onFail: async (reason) => { failReason = reason; } });
+      if (res.ok) throw new Error('expected ok:false, got ok:true');
+      if (res.reason !== 'delete_menuitem_not_found') throw new Error('unexpected reason: ' + res.reason);
+      if (failReason !== 'delete_menuitem_not_found') throw new Error('onFail not called with reason');
+      const remaining = await page.locator('a#conversation_223456789').count();
+      if (remaining !== 1) throw new Error('sidecar item was changed unexpectedly');
+    });
+
+    await test('非会话详情页：直接跳过，ok:false', async () => {
+      await page.goto(TO_FILE_URL('delete-conversation-no-delete', 'plain.html'));
+      const res = await deleteCurrentConversation(page);
+      if (res.ok) throw new Error('expected ok:false');
+      if (res.reason !== 'not_chat_detail') throw new Error('unexpected reason: ' + res.reason);
+    });
+
+    await browser.close();
+  } else {
+    console.log('删除会话浏览器夹具测试已跳过（本机无 Playwright/Chromium）');
   }
-
-  const page = await browser.newPage();
-
-  await test('正常流程：打开 ⋯ → 删除 → 确认删除，条目被移除', async () => {
-    await page.goto(TO_FILE_URL('delete-conversation', 'chat', '123456789', 'index.html'));
-    const res = await deleteCurrentConversation(page);
-    if (!res.ok) throw new Error('expected ok, got reason: ' + res.reason);
-    if (res.chat_id !== '123456789') throw new Error('wrong chat_id: ' + res.chat_id);
-    const remaining = await page.locator('a#conversation_123456789').count();
-    if (remaining !== 0) throw new Error('sidecar item still present after delete');
-  });
-
-  await test('菜单无「删除」：不误点、ok:false、条目保留', async () => {
-    await page.goto(TO_FILE_URL('delete-conversation-no-delete', 'chat', '223456789', 'index.html'));
-    const res = await deleteCurrentConversation(page);
-    if (res.ok) throw new Error('expected ok:false, got ok:true');
-    if (res.reason !== 'delete_menuitem_not_found') throw new Error('unexpected reason: ' + res.reason);
-    const remaining = await page.locator('a#conversation_223456789').count();
-    if (remaining !== 1) throw new Error('sidecar item was changed unexpectedly');
-  });
-
-  await test('非会话详情页：直接跳过，ok:false', async () => {
-    await page.goto(TO_FILE_URL('delete-conversation-no-delete', 'plain.html'));
-    const res = await deleteCurrentConversation(page);
-    if (res.ok) throw new Error('expected ok:false');
-    if (res.reason !== 'not_chat_detail') throw new Error('unexpected reason: ' + res.reason);
-  });
-
-  await browser.close();
 
   console.log(`删除会话测试结果: ${passed} 通过, ${failed} 失败`);
   process.exit(failed === 0 ? 0 : 1);

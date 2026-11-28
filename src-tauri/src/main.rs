@@ -23,6 +23,8 @@ fn main() {
             commands::project_list,
             commands::project_create,
             commands::project_delete,
+            commands::project_delete_preview,
+            commands::project_force_delete,
             commands::project_import,
             commands::project_import_candidates,
             commands::project_rename,

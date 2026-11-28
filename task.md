@@ -1452,6 +1452,20 @@ README 中说明：
 
 ## 23.5 本轮变更记录
 
+### 2026-11-28（项目删除外键报错、保存反馈、删除会话失效修复）
+
+**背景：** 用户迁移项目根目录后删除项目报 `FOREIGN KEY constraint failed`；项目详情/提示词页保存按钮点击后无可见反馈；豆包会话删除功能疑似失效。
+
+**改动：**
+- Rust（`commands.rs`）：新增 `ProjectDeletePreview`、`project_dependents`、`delete_project_records`，`project_delete` 改为事务内按依赖顺序级联清理；新增 `project_delete_preview` / `project_force_delete`（可选永久删磁盘目录，含抽出的安全校验纯函数）；`main.rs` 注册；新增外键开启下的级联删除与磁盘删除安全校验单测。
+- 前端（`api.ts`、`Projects.tsx`、`ProjectWorkspace.tsx`、`useSaveHint.ts`、`i18n`）：删除确认弹窗展示影响范围与「可选删文件夹」勾选；提示词/参数保存成功后显示约 2.5 秒「✓ 已保存」行内提示。
+- Sidecar（`index.js`、`deleter.js`、`deleter.test.js`）：生成时记录 `generatedPage` / `generatedChatId`，删除会话时按会话 id 精确选页；「更多」按钮/菜单/确认框多候选选择器 + 位置打分，失败落诊断快照并触发 `onFail`；URL 纯函数测试在未安装 Playwright 时仍执行。
+- Rust（`task_scheduler.rs`）：删除命令携带 `project_root`；删除失败/超时/未确认均写 `notifications` 表，不再静默只记日志。
+- 文档：`CHANGELOG.md`、`docs/ARCHITECTURE.md`、`docs/USER_GUIDE.md`、`docs/TESTING.md` 同步。
+
+**验证：** `cargo test` 69/69；`npx tsc --noEmit`、`npm run build`；`scripts/run-tests.ps1` 全绿（已执行 172 项）；`deleter.test.js` URL 9/9。**受阻**：本机 GUI 测试——进程在 session 0（services），交互桌面在 session 1，`npx tauri dev` 报 `WebView2 error: 无效的窗口句柄`；真实豆包会话删除另缺 Playwright/Chromium 与登录态。均需用户监督复测后闭合。
+
+
 ### 2026-11-09（B13 应用更新端到端验证，v1.3.0 发布闭环，用户授权）
 
 **发布：** bump 1.3.0（package.json/package-lock.json/Cargo.toml/Cargo.lock + release.yml `releaseBody` 同步 + CHANGELOG `[v1.3.0] - 2026-11-09`）→ commit `b7bce1f` → 推送 `main`（含此前未推送的 B8–B12 共 5 个提交，6a06b5f..b7bce1f）→ 推送 tag `v1.3.0` → CI run `42572883004`（windows-latest，**20m17s 全绿**，仅 Node.js 20 deprecation 警告）→ GitHub Release `v1.3.0` 发布（2026-11-09T06:44:51Z）：`doubao-batch-image-generate_1.3.0_x64-setup.exe`(247MB)+sig、`_x64_en-US.msi`(343MB)+sig、`latest.json`（windows-x86_64/nsis/msi 三目标，sig len 464，version=1.3.0）。
