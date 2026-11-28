@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [v1.8.0] - 2026-11-28
+
+### 修复
+
+- **项目删除失败 `FOREIGN KEY constraint failed`**：`project_delete` 原先只删 `projects` 一行，任务/轮次/图片/图片池等关联记录仍引用它，SQLite 拒绝删除（根目录迁移后旧记录尤其容易触发）。现改为事务内按依赖顺序级联清理，并新增删除确认弹窗展示影响范围；可选勾选「同时永久删除磁盘项目文件夹」（默认不删，删除前做项目目录安全校验，校验失败仍清库并提示）。新增 `project_delete_preview` / `project_force_delete` 命令与单测。
+- **保存按钮点击后无反馈**：项目工作台「提示词与参数」页保存成功后按钮旁显示约 2.5 秒「✓ 已保存」；项目管理页提示词/生成参数弹窗保存成功后页面标题旁显示同样提示。新增共享 `useSaveHint` Hook。
+- **豆包会话删除失效**：删除时改为复用生成时的标签页并按会话 id 精确匹配（不再取上下文第一个页面），「更多」按钮/菜单/确认框改为多候选选择器 + 位置打分，兼容页面结构变化；任何一步失败都落诊断快照（截图+HTML+JSON），并在执行日志与软件内通知中显示失败原因，绝不盲点危险按钮。
+
+### 验证
+
+- `cargo test --offline --target-dir target3` **69/69 通过**（含新增外键级联删除与磁盘删除安全校验用例）；`npx tsc --noEmit`、`npm run build` 通过；`scripts/run-tests.ps1` 全部离线检查通过（已执行 172 项）。
+- `sidecar/src/deleter.test.js` URL 纯函数 9/9 通过；headless Chromium 夹具因本机未安装 Playwright/Chromium 跳过，尚未真机验证删除按钮选择器。
+- 真机 GUI 测试在本机受阻：当前进程位于 session 0（services），交互桌面在 session 1，Tauri 启动报 `WebView2 error: 无效的窗口句柄`。按项目约束不标记为 PASS。
+
 ## [v1.7.2] - 2026-11-25
 
 ### 修复
