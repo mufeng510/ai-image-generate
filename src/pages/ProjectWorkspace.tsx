@@ -239,11 +239,11 @@ export default function ProjectWorkspace({ projectId, projectName, onOpenTask, o
             </div>
             <button onClick={() => projectOpenReferencesFolder(projectId).catch((e) => notify(e))} style={btnStyle} title={t('workspace.openRefsFolderTitle')}>{t('btn.openFolder')}</button>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '12px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '12px', alignItems: 'start' }}>
             {refs.map((item) => (
               <div key={item.path} style={{ border: '1px solid #e5e5e5', borderRadius: '8px', overflow: 'hidden' }}>
-                <div style={{ width: '100%', aspectRatio: '1', background: '#f3f4f6' }}>
-                  <img src={convertFileSrc(item.path)} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={(e) => { (e.target as HTMLElement).style.display = 'none' }} />
+                <div style={{ width: '100%', background: '#f3f4f6' }}>
+                  <img src={convertFileSrc(item.path)} alt={item.name} style={{ display: 'block', width: '100%', height: 'auto', objectFit: 'contain' }} onError={(e) => { (e.target as HTMLElement).style.display = 'none' }} />
                 </div>
                 <div style={{ padding: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '4px' }}>
                   <span style={{ fontSize: '11px', color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.relative_path}>{item.name}</span>

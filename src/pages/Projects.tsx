@@ -611,7 +611,7 @@ export default function ProjectsPage({ onOpenProject }: { onOpenProject: (projec
                                     alt={item.name}
                                     loading="lazy"
                                     onClick={() => setPreview({ item, projectId: id })}
-                                    style={{ width: '100%', height: '88px', objectFit: 'cover', borderRadius: '4px', background: '#f3f4f6', cursor: 'pointer' }}
+                                    style={{ display: 'block', width: '100%', height: 'auto', objectFit: 'contain', borderRadius: '4px', background: '#f3f4f6', cursor: 'pointer' }}
                                   />
                                   <div
                                     title={item.relative_path}

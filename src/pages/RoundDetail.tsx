@@ -29,9 +29,12 @@ export default function RoundDetail({ selection, onBack }: { selection: FolderSe
   const [livePhotoJob, setLivePhotoJob] = useState<string | null>(null)
   const [livePhotoStatus, setLivePhotoStatus] = useState('')
   const [deletingFile, setDeletingFile] = useState<string | null>(null)
+  /** 大图预览：当前图片在选中轮次 images 中的下标，null 表示未打开 */
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null)
 
   const loadDetail = useCallback(async () => {
     setLoading(true)
+    setPreviewIndex(null)
     try {
       const data = await taskFolderDetail(selection.projectId, selection.folder)
       setDetail(data)
@@ -126,6 +129,22 @@ export default function RoundDetail({ selection, onBack }: { selection: FolderSe
 
   const selectedRound = detail?.rounds.find((r) => r.dir === selectedRoundDir) ?? null
   const totalImages = detail?.rounds.reduce((sum, r) => sum + r.image_count, 0) ?? 0
+  const previewImages = selectedRound?.images ?? []
+  const previewImg = previewIndex === null ? null : previewImages[previewIndex] ?? null
+  const previewCur = previewIndex ?? 0
+
+  // 大图预览：Esc 关闭，左右方向键切换上一张 / 下一张
+  useEffect(() => {
+    if (previewIndex == null) return
+    const count = previewImages.length
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPreviewIndex(null)
+      else if (e.key === 'ArrowLeft') setPreviewIndex((i) => (i == null ? null : Math.max(0, i - 1)))
+      else if (e.key === 'ArrowRight') setPreviewIndex((i) => (i == null ? null : Math.min(count - 1, i + 1)))
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [previewIndex, previewImages.length])
 
   return (
     <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -191,7 +210,7 @@ export default function RoundDetail({ selection, onBack }: { selection: FolderSe
                   borderBottom: '1px solid #e5e5e5', cursor: 'pointer',
                   backgroundColor: selectedRoundDir === round.dir ? '#f0fdf4' : 'transparent',
                 }}
-                onClick={() => setSelectedRoundDir(round.dir)}
+                onClick={() => { setSelectedRoundDir(round.dir); setPreviewIndex(null) }}
               >
                 <td style={{ padding: '10px', fontSize: '13px' }}>
                   {t('roundDetail.batchRound', { n: round.round_number ?? 0 })}
@@ -230,6 +249,9 @@ export default function RoundDetail({ selection, onBack }: { selection: FolderSe
               <div style={{ fontSize: '12px', color: '#6b7280', maxWidth: '620px', overflowWrap: 'anywhere' }}>
                 {selectedRound.prompt ? `${t('roundDetail.promptLabel')}: ${selectedRound.prompt}` : '-'}
               </div>
+              <div style={{ fontSize: '12px', color: '#9ca3af', marginTop: '4px' }}>
+                {t('roundDetail.previewHint')}
+              </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <button
@@ -241,22 +263,32 @@ export default function RoundDetail({ selection, onBack }: { selection: FolderSe
             </div>
           </div>
           <div style={{ padding: '24px' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', alignItems: 'start' }}>
               {selectedRound.images.length > 0 ? (
-                selectedRound.images.map((img) => (
+                selectedRound.images.map((img, idx) => (
                   <div key={img.file} style={{ border: '1px solid #e5e5e5', borderRadius: '8px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                    <div style={{ position: 'relative', width: '100%', aspectRatio: '1', background: '#f3f4f6', overflow: 'hidden' }}>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setPreviewIndex(idx)}
+                      onKeyDown={(e) => {
+                        if (e.target !== e.currentTarget) return
+                        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setPreviewIndex(idx) }
+                      }}
+                      title={t('roundDetail.previewHint')}
+                      style={{ position: 'relative', width: '100%', background: '#f3f4f6', overflow: 'hidden', cursor: 'zoom-in' }}
+                    >
                       <img
                         src={convertFileSrc(img.path)}
                         alt={t('roundDetail.altImage', { n: img.index ?? 0 })}
-                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        style={{ display: 'block', width: '100%', height: 'auto', objectFit: 'contain', margin: '0 auto' }}
                         onError={(e) => { (e.target as HTMLElement).style.display = 'none' }}
                       />
                       <div style={{ position: 'absolute', top: '4px', left: '4px', background: 'rgba(0,0,0,0.6)', color: '#fff', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>
                         {img.index ?? img.file}
                       </div>
                       <button
-                        onClick={() => handleDeleteImage(img.file)}
+                        onClick={(e) => { e.stopPropagation(); handleDeleteImage(img.file) }}
                         disabled={deletingFile === img.file}
                         title={t('roundDetail.deleteImageHint')}
                         style={{ position: 'absolute', top: '4px', right: '4px', background: 'rgba(220,38,38,0.9)', color: '#fff', border: 'none', padding: '2px 8px', borderRadius: '4px', cursor: deletingFile === img.file ? 'not-allowed' : 'pointer', fontSize: '11px' }}
@@ -282,6 +314,52 @@ export default function RoundDetail({ selection, onBack }: { selection: FolderSe
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 大图预览：完整展示图片，方便逐张筛选 */}
+      {previewImg && (
+        <div
+          onClick={() => setPreviewIndex(null)}
+          style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.88)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', padding: '24px', boxSizing: 'border-box' }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#e5e7eb', fontSize: '13px', flexWrap: 'wrap', justifyContent: 'center' }}
+          >
+            <button
+              onClick={() => setPreviewIndex(Math.max(0, previewCur - 1))}
+              disabled={previewCur === 0}
+              style={{ padding: '6px 12px', border: '1px solid #4b5563', borderRadius: '6px', background: 'transparent', color: '#e5e7eb', cursor: previewCur === 0 ? 'not-allowed' : 'pointer', opacity: previewCur === 0 ? 0.5 : 1 }}
+            >
+              ← {t('roundDetail.previewPrev')}
+            </button>
+            <span style={{ minWidth: '72px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>
+              {t('roundDetail.previewCounter', { cur: previewCur + 1, total: previewImages.length })}
+            </span>
+            <button
+              onClick={() => setPreviewIndex(Math.min(previewImages.length - 1, previewCur + 1))}
+              disabled={previewCur >= previewImages.length - 1}
+              style={{ padding: '6px 12px', border: '1px solid #4b5563', borderRadius: '6px', background: 'transparent', color: '#e5e7eb', cursor: previewCur >= previewImages.length - 1 ? 'not-allowed' : 'pointer', opacity: previewCur >= previewImages.length - 1 ? 0.5 : 1 }}
+            >
+              {t('roundDetail.previewNext')} →
+            </button>
+            <button
+              onClick={() => setPreviewIndex(null)}
+              style={{ padding: '6px 12px', border: '1px solid #4b5563', borderRadius: '6px', background: 'transparent', color: '#e5e7eb', cursor: 'pointer', marginLeft: '8px' }}
+            >
+              {t('common.close')} (Esc)
+            </button>
+          </div>
+          <img
+            src={convertFileSrc(previewImg.path)}
+            alt={t('roundDetail.altImage', { n: previewImg.index ?? 0 })}
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '92vw', maxHeight: '78vh', objectFit: 'contain', background: '#111', borderRadius: '4px' }}
+          />
+          <div style={{ color: '#9ca3af', fontSize: '12px', overflowWrap: 'anywhere', maxWidth: '92vw', textAlign: 'center' }}>
+            {previewImg.file}
           </div>
         </div>
       )}
